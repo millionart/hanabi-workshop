@@ -70,6 +70,8 @@ pub struct TimedSubEmitterModifier {
     pub burst_time: f32,
     #[serde(default)]
     pub burst_interval: f32,
+    #[serde(default)]
+    pub snapshot_age: bool,
 }
 
 /// Emit from a world-geometry collision. The isolated editor previews a floor plane.
@@ -326,6 +328,7 @@ pub fn register(registry: &AppTypeRegistry) {
             burst_repetitions: 0,
             burst_time: 0.,
             burst_interval: 0.,
+            snapshot_age: false,
         })
     });
     register_reflect_modifier::<CollisionSubEmitterModifier>(registry, |module| {
@@ -788,7 +791,17 @@ impl Modifier for TimedSubEmitterModifier {
         ModifierContext::Update
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        Cow::Borrowed(&[Attribute::AGE, Attribute::LIFETIME, Attribute::U32_1])
+        if self.snapshot_age {
+            Cow::Borrowed(&[
+                Attribute::AGE,
+                Attribute::LIFETIME,
+                Attribute::U32_1,
+                Attribute::F32_5,
+                Attribute::F32_7,
+            ])
+        } else {
+            Cow::Borrowed(&[Attribute::AGE, Attribute::LIFETIME, Attribute::U32_1])
+        }
     }
     fn boxed_clone(&self) -> BoxedModifier {
         Box::new(*self)
@@ -833,16 +846,31 @@ fn sub_emitter_random(x: u32) -> f32 {
         } else {
             String::new()
         };
+        let mut start = format!("var previous_age = particle.age - {dt};\n");
+        let mut active = "was_alive";
+        if self.snapshot_age {
+            // Snapshot slots survive their source particles. Reset the schedule when a slot is reused.
+            start.push_str(r#"
+if (particle.f32_7 > 0.0) {
+    previous_age = select(0.0, particle.f32_5, particle.f32_5 <= particle.age);
+}
+if (particle.f32_7 != 0.0) {
+    particle.f32_5 = select(0.0, particle.age, particle.f32_7 > 0.0);
+}
+"#);
+            active = "(was_alive || particle.f32_7 > 0.0) && particle.f32_7 >= 0.0";
+        }
         // shortcut: Hanabi's birth identity stands in for Unity's particle seed until the spawn seeds are shared.
         // shortcut: use the current parent position until GPU events can carry per-birth interpolated data.
         context.main_code.push_str(&format!(
             r#"
-if (was_alive && {dt} > 0.0 && {probability:?} > 0.0) {{
+{start}
+if ({active} && {dt} > 0.0 && {probability:?} > 0.0) {{
     let parent_seed = pcg_hash(particle.u32_1 ^ (*spawner).seed);
     if (sub_emitter_random(parent_seed + 0x5aa47f98u) <= {probability:?}) {{
         let delay = mix({delay_min:?}, {delay_max:?}, sub_emitter_random(parent_seed + 0x34bfa39au));
         let elapsed = min(particle.age, particle.lifetime) - delay;
-        let previous = clamp(particle.age - {dt} - delay, 0.0, {duration});
+        let previous = clamp(previous_age - delay, 0.0, {duration});
         let current = clamp(elapsed, previous, {duration});
         var count = u32(floor(current * {rate:?}) - floor(previous * {rate:?}));
         {burst}
