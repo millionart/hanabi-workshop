@@ -85,6 +85,15 @@ pub struct SimulationStepModifier {
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct IntegrateMotionModifier;
 
+/// Read the host's collision/prewarm snapshot when this emitter is driven by the game.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct ParticleSnapshotModifier {
+    pub particle_state_slot: u32,
+    pub use_snapshot: ExprHandle,
+}
+
+pub const PARTICLE_STATE_SLOT: &str = "particle_state";
+
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
     registry.write().register::<WorldAccelerationModifier>();
@@ -93,6 +102,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<EmissionShapeModifier>();
     registry.write().register::<SimulationStepModifier>();
     registry.write().register::<IntegrateMotionModifier>();
+    registry.write().register::<ParticleSnapshotModifier>();
     register_reflect_modifier::<VelocityOverLifetimeModifier>(registry, |module| {
         let zero = module.lit(Vec3::ZERO);
         let radial = module.lit(0_f32);
@@ -183,6 +193,48 @@ pub fn register(registry: &AppTypeRegistry) {
     register_reflect_modifier::<IntegrateMotionModifier>(registry, |_| {
         Box::new(IntegrateMotionModifier)
     });
+    register_reflect_modifier::<ParticleSnapshotModifier>(registry, |module| {
+        Box::new(ParticleSnapshotModifier {
+            particle_state_slot: 0,
+            use_snapshot: module.lit(false),
+        })
+    });
+}
+
+impl Modifier for ParticleSnapshotModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[
+            Attribute::AGE,
+            Attribute::LIFETIME,
+            Attribute::POSITION,
+            Attribute::VELOCITY,
+            Attribute::SIZE3,
+            Attribute::F32_0,
+            Attribute::F32X2_0,
+            Attribute::F32X2_1,
+            Attribute::F32_6,
+            Attribute::F32_7,
+            Attribute::F32X3_2,
+            Attribute::HDR_COLOR,
+        ])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        let active = context.eval(module, self.use_snapshot)?;
+        if !context.extra_code.contains("fn source_state_component(") {
+            context
+                .extra_code
+                .push_str(include_str!("particle_snapshot.wesl"));
+        }
+        let texture = format!("material_texture_{}", self.particle_state_slot);
+        context.main_code.push_str(&format!("\nif ({active}) {{\nlet slot = particle_index;\nlet posed = source_state_component({texture}, slot, 0u);\nlet age = posed.w;\nis_alive = true;\nparticle.f32_7 = select(-1.0, 1.0, age >= 0.0);\nparticle.position = posed.xyz;\nparticle.age = max(age, 0.0);\nlet movement = source_state_component({texture}, slot, 1u);\nparticle.velocity = movement.xyz;\nparticle.lifetime = movement.w;\nlet extent = source_state_component({texture}, slot, 2u);\nparticle.size3 = extent.xyz;\nparticle.f32_0 = extent.w;\nlet angle = source_state_component({texture}, slot, 3u);\nparticle.f32x2_0 = angle.xy;\nparticle.f32x2_1 = angle.zw;\nlet extras = source_state_component({texture}, slot, 4u);\nparticle.f32x3_2 = vec3<f32>(extras.xyz);\nparticle.f32_6 = extras.w;\nparticle.hdr_color = source_state_component({texture}, slot, 5u);\n}}\n"));
+        Ok(())
+    }
 }
 
 impl Modifier for SimulationStepModifier {

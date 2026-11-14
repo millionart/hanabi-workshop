@@ -108,6 +108,8 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<CloudRemapModifier>();
     registry.write().register::<BillboardGeometryModifier>();
     registry.write().register::<ParticleDistortionModifier>();
+    registry.write().register::<DamageNumberModifier>();
+    registry.write().register::<SnapshotColorModifier>();
     register_reflect_modifier::<CloudRemapModifier>(registry, |_| {
         Box::new(CloudRemapModifier::default())
     });
@@ -116,6 +118,12 @@ pub fn register(registry: &AppTypeRegistry) {
     });
     register_reflect_modifier::<ParticleDistortionModifier>(registry, |_| {
         Box::new(ParticleDistortionModifier::default())
+    });
+    register_reflect_modifier::<DamageNumberModifier>(registry, |_| {
+        Box::new(DamageNumberModifier::default())
+    });
+    register_reflect_modifier::<SnapshotColorModifier>(registry, |_| {
+        Box::new(SnapshotColorModifier)
     });
 }
 
@@ -338,6 +346,127 @@ fn vec2(v: Vec2) -> String {
 
 fn fragment_world_position(code: &mut String) {
     code.push_str("let ndc_xy = ((in.position.xy - view.viewport.xy) / view.viewport.zw) * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);\nlet world_h = view.world_from_clip * vec4<f32>(ndc_xy, in.position.z, 1.0);\n");
+}
+
+/// Preserve the host's original color gradient when particle state comes from a snapshot.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct SnapshotColorModifier;
+
+impl Modifier for SnapshotColorModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::F32_7, Attribute::HDR_COLOR])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Snapshot color is a vertex modifier.",
+        ))
+    }
+}
+
+impl RenderModifier for SnapshotColorModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context
+            .vertex_code
+            .push_str("\nif (particle.f32_7 > 0.0) { color = particle.hdr_color; }\n");
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
+}
+
+/// Draw the source four-cell damage-number atlas on a particle billboard.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct DamageNumberModifier {
+    pub atlas_slot: u32,
+    pub tint: Vec4,
+    pub critical: Vec4,
+    pub texture_transform: Vec4,
+    pub character_limit: f32,
+}
+
+impl Default for DamageNumberModifier {
+    fn default() -> Self {
+        Self {
+            atlas_slot: 0,
+            tint: Vec4::ONE,
+            critical: Vec4::ONE,
+            texture_transform: Vec4::new(1., 1., 0., 0.),
+            character_limit: 4.,
+        }
+    }
+}
+
+impl Modifier for DamageNumberModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::F32X2_1])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Damage Number is a fragment modifier.",
+        ))
+    }
+}
+
+impl RenderModifier for DamageNumberModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_uv();
+        context.set_needs_particle_fragment();
+        if !context.render_extra.contains("fn number_atlas_uv(") {
+            context
+                .render_extra
+                .push_str(include_str!("particle_number.wesl"));
+        }
+        let vec4 = |v: Vec4| format!("vec4<f32>({:?}, {:?}, {:?}, {:?})", v.x, v.y, v.z, v.w);
+        let transform = vec4(self.texture_transform);
+        let tint = vec4(self.tint);
+        let critical = vec4(self.critical);
+        context.fragment_code.push_str(&format!("\n{{\nlet st = {transform};\nlet coords = uv * st.xy + st.zw;\nif (coords.x > 1.0) {{ discard; }}\nlet glyph = select(vec2<f32>(1234.0, 0.0), particle.f32x2_1, particle.f32x2_1.x != 0.0);\nlet atlas = number_atlas_uv(coords, glyph.x, {:?});\nlet texel = textureSample(material_texture_{slot}, material_sampler_{slot}, atlas);\nlet edge = (1.0 - texel.r) * clamp(glyph.y, 0.0, 1.0) * texel.a;\ncolor *= mix(texel, {critical}, edge) * {tint};\n}}\n", self.character_limit, slot = self.atlas_slot));
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
 }
 
 /// Refract the current camera's opaque color using mask and normal textures.
@@ -590,6 +719,13 @@ impl RenderModifier for BillboardGeometryModifier {
                 "let pivot = vec3<f32>({:?}, {:?}, {:?}) * size;\nposition += axis_x * pivot.x + axis_y * pivot.y + axis_z * pivot.z;\nsize *= particle.f32x3_2;\n",
                 self.pivot.x, self.pivot.y, self.pivot.z,
             ));
+        } else if context.particle_layout.contains(Attribute::F32_7) {
+            code.push_str("if (particle.f32_7 > 0.0) { size *= particle.f32x3_2; }\n");
+        }
+        if context.particle_layout.contains(Attribute::F32_7) {
+            code.push_str(
+                "if (particle.f32_7 < 0.0) { position = vec3<f32>(0.0); size = vec3<f32>(0.0); }\n",
+            );
         }
         code.push_str("}\n");
         context.vertex_code.push_str(&code);
