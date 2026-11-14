@@ -1343,6 +1343,9 @@ pub fn bake_emitter_with_provenance(
         modifier
             .as_reflect()
             .is::<crate::particle_motion::VelocityOverLifetimeModifier>()
+            || modifier
+                .as_reflect()
+                .is::<crate::particle_motion::IntegrateMotionModifier>()
     });
     let mut asset = EffectAsset::new(graph.capacity, spawner, module).with_alpha_mode(blend);
     if uses_authored_motion {

@@ -27,7 +27,8 @@ use std::collections::HashSet;
 
 use bevy::prelude::*;
 use bevy_hanabi::{
-    CompiledParticleEffect, EffectSimulation, EffectSimulationTime, EffectSpawner, ShaderCache,
+    CompiledParticleEffect, EffectProperties, EffectSimulation, EffectSimulationTime,
+    EffectSpawner, EffectSystems, ShaderCache,
 };
 
 use crate::document::{
@@ -79,16 +80,43 @@ impl Plugin for PlaybackPlugin {
         // `apply_playback_commands` must observe every Respawn emitted by
         // `apply_edits` in the same Update, before Hanabi's PostUpdate systems
         // see the new assets.
-        app.add_message::<PlaybackCommand>().add_systems(
-            Update,
-            (
-                apply_playback_commands
-                    .after(crate::edits::EditSystems)
-                    .after(crate::app_commands::apply_app_commands),
-                start_warmed_gpu_hierarchies,
-                drive_effect_simulation_clock,
-            ),
-        );
+        app.add_message::<PlaybackCommand>()
+            .add_systems(
+                Update,
+                (
+                    apply_playback_commands
+                        .after(crate::edits::EditSystems)
+                        .after(crate::app_commands::apply_app_commands),
+                    start_warmed_gpu_hierarchies,
+                    drive_effect_simulation_clock,
+                ),
+            )
+            .add_systems(
+                PostUpdate,
+                update_emitter_cycle.after(EffectSystems::TickSpawners),
+            );
+    }
+}
+
+fn update_emitter_cycle(
+    mut effects: Query<
+        (&EffectSpawner, &mut EffectProperties),
+        With<crate::document::SceneEmitter>,
+    >,
+) {
+    for (spawner, mut properties) in &mut effects {
+        let ratio = spawner.cycle_ratio();
+        let ratio = if ratio.is_finite() {
+            ratio.clamp(0., 1.)
+        } else {
+            0.
+        };
+        if properties
+            .get_stored("emitter_cycle")
+            .is_some_and(|value| value != ratio.into())
+        {
+            properties.set("emitter_cycle", ratio.into());
+        }
     }
 }
 

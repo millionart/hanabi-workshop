@@ -67,12 +67,24 @@ pub struct EmissionShapeModifier {
     pub align_to_direction: bool,
 }
 
+/// Establish this emitter's simulation step and compensate Hanabi's default age integration.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct SimulationStepModifier {
+    pub rate: ExprHandle,
+}
+
+/// Integrate persistent velocity with the emitter's simulation step.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct IntegrateMotionModifier;
+
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
     registry.write().register::<WorldAccelerationModifier>();
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
     registry.write().register::<EmissionShapeModifier>();
+    registry.write().register::<SimulationStepModifier>();
+    registry.write().register::<IntegrateMotionModifier>();
     register_reflect_modifier::<VelocityOverLifetimeModifier>(registry, |module| {
         let zero = module.lit(Vec3::ZERO);
         let radial = module.lit(0_f32);
@@ -151,6 +163,63 @@ pub fn register(registry: &AppTypeRegistry) {
             align_to_direction: false,
         })
     });
+    register_reflect_modifier::<SimulationStepModifier>(registry, |module| {
+        Box::new(SimulationStepModifier {
+            rate: module.lit(1_f32),
+        })
+    });
+    register_reflect_modifier::<IntegrateMotionModifier>(registry, |_| {
+        Box::new(IntegrateMotionModifier)
+    });
+}
+
+impl Modifier for SimulationStepModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::AGE, Attribute::LIFETIME])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        if context.main_code.contains("let source_delta_time =") {
+            return Err(ExprError::TypeError(
+                "Only one simulation step node is allowed per emitter".into(),
+            ));
+        }
+        let rate = context.eval(module, self.rate)?;
+        context.main_code.push_str(&format!("\nlet source_delta_time = sim_params.delta_time * max({rate}, 0.0);\nparticle.age += source_delta_time - sim_params.delta_time;\nis_alive = was_alive && particle.age < particle.lifetime;\n"));
+        Ok(())
+    }
+}
+
+impl Modifier for IntegrateMotionModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        let delta = simulation_delta(context);
+        context.main_code.push_str(&format!(
+            "\nparticle.position += particle.velocity * {delta};\n"
+        ));
+        Ok(())
+    }
+}
+
+fn simulation_delta(context: &ShaderWriter) -> &'static str {
+    if context.main_code.contains("let source_delta_time =") {
+        "source_delta_time"
+    } else {
+        "sim_params.delta_time"
+    }
 }
 
 impl Modifier for EmissionShapeModifier {
@@ -207,9 +276,9 @@ impl Modifier for ParticleSpawnEventModifier {
     fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
         context.set_emits_gpu_spawn_events(true)?;
         let count = context.eval(module, self.count)?;
-        let birth = "particle.age <= sim_params.delta_time";
+        let birth = format!("particle.age <= {}", simulation_delta(context));
         let condition = if self.mode == 0 {
-            birth.to_owned()
+            birth
         } else {
             format!(
                 "({birth} || distance(particle.position, particle.f32x3_3) >= {:?})",
@@ -250,8 +319,9 @@ impl Modifier for WorldAccelerationModifier {
         } else {
             acceleration
         };
+        let delta = simulation_delta(context);
         context.main_code.push_str(&format!(
-            "\nparticle.velocity += ({acceleration}) * sim_params.delta_time;\n"
+            "\nparticle.velocity += ({acceleration}) * {delta};\n"
         ));
         Ok(())
     }
@@ -275,7 +345,8 @@ impl Modifier for VelocityOverLifetimeModifier {
     fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
         let linear = context.eval(module, self.linear)?;
         let factor = context.eval(module, self.speed_factor)?;
-        let mut code = format!("{{\nlet dt = sim_params.delta_time * ({factor});\n");
+        let delta = simulation_delta(context);
+        let mut code = format!("{{\nlet dt = {delta} * ({factor});\n");
         if !self.local_particles || self.world_space {
             code.push_str("let frame = unpack_compressed_transform((*spawner).transform);\n");
         }
@@ -390,6 +461,7 @@ impl Modifier for CurlNoiseModifier {
         let rotation = context.eval(module, self.rotation_amount)?;
         let size = context.eval(module, self.size_amount)?;
         let scroll = context.eval(module, self.scroll_speed)?;
+        let delta = simulation_delta(context);
         let frequency = self.frequency.max(1e-6);
         let scale = if self.damping { frequency.recip() } else { 1. };
         if !context.extra_code.contains("fn unity_curl(") {
@@ -407,7 +479,7 @@ impl Modifier for CurlNoiseModifier {
         let use_motion = if self.velocity_addition {
             format!("particle.f32x3_1 = {motion};")
         } else {
-            format!("particle.position += ({motion}) * sim_params.delta_time;")
+            format!("particle.position += ({motion}) * {delta};")
         };
         let size_value = if self.separate_size_axes {
             "scale_factor"
@@ -422,7 +494,7 @@ impl Modifier for CurlNoiseModifier {
         context.main_code.push_str(&format!(
             "\n{{\nlet p = particle.position * vec3<f32>(1.0, 1.0, -1.0) + ({seed_offset}) * 100.0;\n\
              let curl = unity_curl(p, sim_params.time * ({scroll}), {frequency:?}, {}u, {}u, {:?}, {:?}) * ({strength}) * {scale:?};\n\
-             {use_motion}\nlet angular = curl * ({rotation}) * (0.008726646 * sim_params.delta_time);\nparticle.f32_0 += angular.z;\n{pitch_yaw}\n\
+             {use_motion}\nlet angular = curl * ({rotation}) * (0.008726646 * {delta});\nparticle.f32_0 += angular.z;\n{pitch_yaw}\n\
              let scale_factor = max(vec3<f32>(0.0), vec3<f32>(1.0) + curl * (0.5 * ({size})));\n\
              particle.size3 {} {size_value};\n}}\n",
             self.quality, self.octaves, self.octave_multiplier, self.octave_scale, if self.size_from_lifetime { "*=" } else { "= particle.f32x3_0 *" },
