@@ -196,7 +196,7 @@ pub fn register(registry: &AppTypeRegistry) {
     register_reflect_modifier::<ParticleSnapshotModifier>(registry, |module| {
         Box::new(ParticleSnapshotModifier {
             particle_state_slot: 0,
-            use_snapshot: module.lit(false),
+            use_snapshot: module.lit(0_u32),
         })
     });
 }
@@ -232,7 +232,7 @@ impl Modifier for ParticleSnapshotModifier {
                 .push_str(include_str!("particle_snapshot.wesl"));
         }
         let texture = format!("material_texture_{}", self.particle_state_slot);
-        context.main_code.push_str(&format!("\nif ({active}) {{\nlet slot = particle_index;\nlet posed = source_state_component({texture}, slot, 0u);\nlet age = posed.w;\nis_alive = true;\nparticle.f32_7 = select(-1.0, 1.0, age >= 0.0);\nparticle.position = posed.xyz;\nparticle.age = max(age, 0.0);\nlet movement = source_state_component({texture}, slot, 1u);\nparticle.velocity = movement.xyz;\nparticle.lifetime = movement.w;\nlet extent = source_state_component({texture}, slot, 2u);\nparticle.size3 = extent.xyz;\nparticle.f32_0 = extent.w;\nlet angle = source_state_component({texture}, slot, 3u);\nparticle.f32x2_0 = angle.xy;\nparticle.f32x2_1 = angle.zw;\nlet extras = source_state_component({texture}, slot, 4u);\nparticle.f32x3_2 = vec3<f32>(extras.xyz);\nparticle.f32_6 = extras.w;\nparticle.hdr_color = source_state_component({texture}, slot, 5u);\n}}\n"));
+        context.main_code.push_str(&format!("\nif (({active}) != 0u) {{\nlet slot = particle_index;\nlet posed = source_state_component({texture}, slot, 0u);\nlet age = posed.w;\nis_alive = true;\nparticle.f32_7 = select(-1.0, 1.0, age >= 0.0);\nparticle.position = posed.xyz;\nparticle.age = max(age, 0.0);\nlet movement = source_state_component({texture}, slot, 1u);\nparticle.velocity = movement.xyz;\nparticle.lifetime = movement.w;\nlet extent = source_state_component({texture}, slot, 2u);\nparticle.size3 = extent.xyz;\nparticle.f32_0 = extent.w;\nlet angle = source_state_component({texture}, slot, 3u);\nparticle.f32x2_0 = angle.xy;\nparticle.f32x2_1 = angle.zw;\nlet extras = source_state_component({texture}, slot, 4u);\nparticle.f32x3_2 = vec3<f32>(extras.xyz);\nparticle.f32_6 = extras.w;\nparticle.hdr_color = source_state_component({texture}, slot, 5u);\n}}\n"));
         Ok(())
     }
 }
