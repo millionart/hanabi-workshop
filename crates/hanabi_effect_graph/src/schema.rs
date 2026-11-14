@@ -244,6 +244,7 @@ fn is_texture_field(modifier_path: &str, field_name: &str) -> bool {
                 | "EmissionShapeModifier"
                 | "ParticleSnapshotModifier"
                 | "DamageNumberModifier"
+                | "SurfaceLightingModifier"
         ) && field_name.ends_with("_slot")
 }
 

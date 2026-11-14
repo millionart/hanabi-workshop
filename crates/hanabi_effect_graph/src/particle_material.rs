@@ -110,6 +110,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<ParticleDistortionModifier>();
     registry.write().register::<DamageNumberModifier>();
     registry.write().register::<SnapshotColorModifier>();
+    registry.write().register::<SurfaceLightingModifier>();
     register_reflect_modifier::<CloudRemapModifier>(registry, |_| {
         Box::new(CloudRemapModifier::default())
     });
@@ -125,6 +126,133 @@ pub fn register(registry: &AppTypeRegistry) {
     register_reflect_modifier::<SnapshotColorModifier>(registry, |_| {
         Box::new(SnapshotColorModifier)
     });
+    register_reflect_modifier::<SurfaceLightingModifier>(registry, |_| {
+        Box::new(SurfaceLightingModifier {
+            light_slot: 0,
+            albedo_slot: 0,
+            normal_slot: 0,
+            emissive_slot: 0,
+            normal_uv: Vec4::new(1., 1., 0., 0.),
+            emissive_uv: Vec4::new(1., 1., 0., 0.),
+            albedo_uv: Vec4::new(1., 1., 0., 0.),
+            use_albedo: false,
+            use_normal: false,
+            use_emission: false,
+            normal_strength: 1.,
+            emission: bevy::math::Vec3::ZERO,
+            metallic: 0.,
+            roughness: 1.,
+            reflectance: 0.,
+        })
+    });
+}
+
+/// Light an opaque particle with the scene's principal and ambient lights.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct SurfaceLightingModifier {
+    pub light_slot: u32,
+    pub albedo_slot: u32,
+    pub normal_slot: u32,
+    pub emissive_slot: u32,
+    pub normal_uv: Vec4,
+    pub emissive_uv: Vec4,
+    pub albedo_uv: Vec4,
+    pub use_albedo: bool,
+    pub use_normal: bool,
+    pub use_emission: bool,
+    pub normal_strength: f32,
+    pub emission: bevy::math::Vec3,
+    pub metallic: f32,
+    pub roughness: f32,
+    pub reflectance: f32,
+}
+
+pub const SCENE_LIGHT_SLOT: &str = "scene_light";
+
+impl Modifier for SurfaceLightingModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Surface lighting is a fragment modifier.",
+        ))
+    }
+}
+
+impl RenderModifier for SurfaceLightingModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_normal();
+        context.set_needs_uv();
+        let mut code = String::from("{\n");
+        fragment_world_position(&mut code);
+        code.push_str("let world = world_h.xyz / world_h.w;\nvar n = normalize(normal);\n");
+        let light = self.light_slot;
+        code.push_str(&format!("let world_light = textureLoad(material_texture_{light}, vec2<i32>(0, 0), 0);\nlet dir = select(vec3<f32>(0.3, 0.7, 0.6), world_light.xyz, world_light.w > 1.5);\nlet diffuse = select(vec3<f32>(0.85), textureLoad(material_texture_{light}, vec2<i32>(1, 0), 0).rgb, world_light.w > 1.5);\nlet ambient = select(vec3<f32>(0.15), textureLoad(material_texture_{light}, vec2<i32>(2, 0), 0).rgb, world_light.w > 1.5);\n"));
+        let dir = "dir";
+        let diffuse = "diffuse";
+        let ambient = "ambient";
+        let sample = |slot: u32, transform: Vec4| {
+            format!(
+                "textureSample(material_texture_{slot}, material_sampler_{slot}, uv * {} + {})",
+                vec2(transform.truncate().truncate()),
+                vec2(Vec2::new(transform.z, transform.w))
+            )
+        };
+        if self.use_albedo {
+            code.push_str(&format!(
+                "color *= {};\n",
+                sample(self.albedo_slot, self.albedo_uv)
+            ));
+        }
+        if self.use_normal {
+            let coords = format!(
+                "uv * {} + {}",
+                vec2(self.normal_uv.truncate().truncate()),
+                vec2(Vec2::new(self.normal_uv.z, self.normal_uv.w))
+            );
+            let map = sample(self.normal_slot, self.normal_uv);
+            code.push_str(&format!("let source_uv = {coords};\nlet ex = dpdx(world);\nlet ey = dpdy(world);\nlet ux = dpdx(source_uv);\nlet uy = dpdy(source_uv);\nlet cot = ux.x * uy.y - ux.y * uy.x;\nlet t = (ex * uy.y - ey * ux.y) * sign(cot);\nlet b = (ey * ux.x - ex * uy.x) * sign(cot);\nlet map = {map};\nlet xy = (vec2<f32>(map.r * map.a, map.g) * 2.0 - 1.0) * {:?};\nif (length(t) > 1e-7 && length(b) > 1e-7) {{ n = normalize(mat3x3<f32>(normalize(t), normalize(b), n) * vec3<f32>(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)))); }}\n", self.normal_strength));
+        }
+        let emission = format!(
+            "vec3<f32>({:?}, {:?}, {:?})",
+            self.emission.x, self.emission.y, self.emission.z
+        );
+        let emission = if self.use_emission {
+            format!(
+                "{emission} * {}.rgb",
+                sample(self.emissive_slot, self.emissive_uv)
+            )
+        } else {
+            emission
+        };
+        code.push_str(&format!("let l = normalize({dir});\nlet v = normalize(view.world_position - world);\nlet h = normalize(l + v);\nlet mu = max(dot(n, l), 0.0);\nlet metallic = {:?};\nlet a = max({:?} * {:?}, 0.002);\nlet nh = max(dot(n, h), 0.0);\nlet d = (a * a) / max(3.14159265 * pow(nh * nh * (a * a - 1.0) + 1.0, 2.0), 1e-5);\nlet f0 = mix(vec3<f32>(0.16 * {:?} * {:?}), color.rgb, metallic);\nlet f = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);\nlet shaded = color.rgb * (1.0 - metallic) * ({ambient} + {diffuse} * mu) + {diffuse} * f * d * mu * 0.25;\ncolor = vec4<f32>(shaded + {emission}, color.a);\n}}\n", self.metallic.clamp(0.,1.), self.roughness, self.roughness, self.reflectance, self.reflectance));
+        context.fragment_code.push_str(&code);
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
 }
 
 impl Modifier for CloudRemapModifier {
