@@ -1079,8 +1079,8 @@ impl Modifier for SphereForceFieldModifier {
                                source_particle_random(birth_seed + 0x89375938u)) - 0.5) * {randomness} * tau;
         let axis = vec3<f32>(cos(angles.x) * sin(angles.y), cos(angles.x) * cos(angles.y), sin(angles.x));
         let tangent = cross(relative, axis);
-        let target = tangent / max(length(tangent), 1e-12) * {orbit_speed:?};
-        particle.velocity += (target - particle.velocity) * ({orbit_attraction:?} * 30.0 * delta);
+        let orbit_velocity = tangent / max(length(tangent), 1e-12) * {orbit_speed:?};
+        particle.velocity += (orbit_velocity - particle.velocity) * ({orbit_attraction:?} * 30.0 * delta);
     }}
     particle.velocity *= max(0.0, 1.0 - {drag:?} * delta / max(length(particle.velocity), 1e-12));
 }}
