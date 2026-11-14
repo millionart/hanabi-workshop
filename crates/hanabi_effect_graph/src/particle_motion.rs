@@ -117,6 +117,66 @@ pub struct TrailAppearanceModifier {
     pub apply_to_preview: bool,
 }
 
+/// Attach scene lights to the live host particle samples.
+#[derive(Clone, Copy, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+pub struct ParticleLightsModifier {
+    pub color: Vec4,
+    pub intensity: f32,
+    pub range: f32,
+    pub ratio: f32,
+    pub max_lights: u32,
+    pub random_distribution: bool,
+    pub use_particle_color: bool,
+    pub size_affects_range: bool,
+    pub alpha_affects_intensity: bool,
+}
+
+impl ParticleLightsModifier {
+    pub fn from_effect(asset: &bevy_hanabi::EffectAsset) -> Option<&Self> {
+        asset
+            .update_modifiers()
+            .find_map(|modifier| modifier.as_reflect().downcast_ref::<Self>())
+    }
+
+    #[cfg(feature = "3d")]
+    pub fn light(&self, color: Vec4, size: f32) -> bevy::prelude::PointLight {
+        let color_multiplier = if self.use_particle_color {
+            color
+        } else {
+            Vec4::ONE
+        };
+        let rgb = self.color * color_multiplier;
+        let range = self.range * if self.size_affects_range { size } else { 1. };
+        let intensity = self.intensity
+            * if self.alpha_affects_intensity {
+                color.w
+            } else {
+                1.
+            };
+        bevy::prelude::PointLight {
+            color: bevy::prelude::Color::linear_rgba(rgb.x, rgb.y, rgb.z, 1.),
+            intensity: intensity.max(0.) * (4. * std::f32::consts::PI),
+            range: range.max(0.),
+            ..Default::default()
+        }
+    }
+}
+
+impl Modifier for ParticleLightsModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, _: &mut ShaderWriter) -> Result<(), ExprError> {
+        Ok(())
+    }
+}
+
 pub const PARTICLE_STATE_SLOT: &str = "particle_state";
 pub const TRAIL_STATE_SLOT: &str = "trail_state";
 pub const PARTICLE_STATE_FIELDS: u32 = 7;
@@ -132,6 +192,20 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<IntegrateMotionModifier>();
     registry.write().register::<ParticleSnapshotModifier>();
     registry.write().register::<TrailAppearanceModifier>();
+    registry.write().register::<ParticleLightsModifier>();
+    register_reflect_modifier::<ParticleLightsModifier>(registry, |_| {
+        Box::new(ParticleLightsModifier {
+            color: Vec4::ONE,
+            intensity: 1.,
+            range: 1.,
+            ratio: 1.,
+            max_lights: 1,
+            random_distribution: true,
+            use_particle_color: false,
+            size_affects_range: false,
+            alpha_affects_intensity: false,
+        })
+    });
     register_reflect_modifier::<VelocityOverLifetimeModifier>(registry, |module| {
         let zero = module.lit(Vec3::ZERO);
         let radial = module.lit(0_f32);

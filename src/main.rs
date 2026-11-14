@@ -264,27 +264,41 @@ impl Roundtrip<'_, '_> {
         }
         let graph = content.effect_graph();
         use hanabi_effect_graph::model::{EditValue, ModifierNodeData};
-        let rounded_trail = graph.emitters.iter().find_map(|emitter| {
+        let effect_config = graph.emitters.iter().find_map(|emitter| {
             emitter.nodes.iter().find_map(|node| {
                 let NodePayload::Modifier(ModifierNodeData::Known { type_path, config }) =
                     &node.payload
                 else {
                     return None;
                 };
-                let Some(EditValue::U32(count)) = config.get("corner_vertices") else {
+                let (field, new) = if type_path.ends_with("::TrailRendererModifier") {
+                    match config.get("corner_vertices") {
+                        Some(EditValue::U32(count)) if *count > 0 => {
+                            ("corner_vertices", EditValue::U32(count.saturating_add(2)))
+                        }
+                        _ => return None,
+                    }
+                } else if type_path.ends_with("::ParticleLightsModifier") {
+                    match config.get("intensity") {
+                        Some(EditValue::Scalar(Value::Scalar(
+                            bevy_hanabi::ScalarValue::Float(value),
+                        ))) if *value > 0. => {
+                            ("intensity", EditValue::Scalar((*value * 1.25).into()))
+                        }
+                        _ => return None,
+                    }
+                } else {
                     return None;
                 };
-                (type_path.ends_with("::TrailRendererModifier") && *count > 0).then(|| {
-                    edits::EditKind::SetModifierConfig {
-                        emitter: emitter.id,
-                        node: node.id,
-                        field: "corner_vertices".into(),
-                        new: EditValue::U32(count.saturating_add(2)),
-                    }
+                Some(edits::EditKind::SetModifierConfig {
+                    emitter: emitter.id,
+                    node: node.id,
+                    field: field.into(),
+                    new,
                 })
             })
         });
-        if let Some(edit) = rounded_trail {
+        if let Some(edit) = effect_config {
             self.edits
                 .write(edits::EditRequest::new(entity, edit.clone()));
             *self.edited = Some(edit);

@@ -38,7 +38,7 @@ all-features = true
 [features]
 default = ["2d", "3d"]
 2d = ["bevy_hanabi/2d"]
-3d = ["bevy_hanabi/3d"]
+3d = ["bevy_hanabi/3d", "bevy/bevy_light"]
 
 [lints]
 workspace = true
