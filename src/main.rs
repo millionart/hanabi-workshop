@@ -281,6 +281,7 @@ impl Roundtrip<'_, '_> {
                             ("burst_count", 0)
                         }
                         "TimedSubEmitterModifier" => ("particles_per_second", 0),
+                        "CollisionSubEmitterModifier" => ("preview_floor", 0),
                         "SnowToppedParticleModifier" => ("depth", 0),
                         "SolidParallaxModifier" => ("parallax", 0),
                         "TrailRendererModifier" => ("corner_vertices", 1),
@@ -293,7 +294,10 @@ impl Roundtrip<'_, '_> {
                         }
                         EditValue::Scalar(Value::Scalar(bevy_hanabi::ScalarValue::Float(
                             value,
-                        ))) if *value > 0. => EditValue::Scalar((*value * 1.25).into()),
+                            ))) if field == "preview_floor" => EditValue::Scalar((*value + 0.25).into()),
+                            EditValue::Scalar(Value::Scalar(bevy_hanabi::ScalarValue::Float(
+                                value,
+                            ))) if *value > 0. => EditValue::Scalar((*value * 1.25).into()),
                         _ => return None,
                     };
                     Some((

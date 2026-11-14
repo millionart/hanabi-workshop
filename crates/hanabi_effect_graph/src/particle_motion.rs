@@ -6,7 +6,7 @@ use bevy::{
 };
 use bevy_hanabi::{
     Attribute, BoxedModifier, EvalContext, ExprError, ExprHandle, Modifier, ModifierContext,
-    Module, ShaderWriter, register_reflect_modifier,
+    Module, ShaderWriter, ToWgslString, register_reflect_modifier,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,14 @@ pub struct TimedSubEmitterModifier {
     pub burst_time: f32,
     #[serde(default)]
     pub burst_interval: f32,
+}
+
+/// Emit from a world-geometry collision. The isolated editor previews a floor plane.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct CollisionSubEmitterModifier {
+    pub count: ExprHandle,
+    pub preview_floor: f32,
+    pub child_index: u32,
 }
 
 /// Interpret the child's shape around the parent position already stored in world space.
@@ -136,6 +144,8 @@ pub struct ParticleSnapshotModifier {
     pub trail_segments: bool,
     #[serde(default)]
     pub trail_triangles: bool,
+    #[serde(default)]
+    pub collision_events: bool,
 }
 
 /// Evaluate the authored trail curves at the two original endpoints.
@@ -220,6 +230,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
     registry.write().register::<TimedSubEmitterModifier>();
+    registry.write().register::<CollisionSubEmitterModifier>();
     registry.write().register::<SubEmitterTransformModifier>();
     registry.write().register::<EmissionShapeModifier>();
     registry.write().register::<SimulationStepModifier>();
@@ -317,6 +328,9 @@ pub fn register(registry: &AppTypeRegistry) {
             burst_interval: 0.,
         })
     });
+    register_reflect_modifier::<CollisionSubEmitterModifier>(registry, |module| {
+        Box::new(CollisionSubEmitterModifier { count: module.lit(1_u32), preview_floor: 0., child_index: 0 })
+    });
     register_reflect_modifier::<SubEmitterTransformModifier>(registry, |_| {
         Box::new(SubEmitterTransformModifier)
     });
@@ -366,6 +380,7 @@ pub fn register(registry: &AppTypeRegistry) {
             mesh_variants: false,
             trail_segments: false,
             trail_triangles: false,
+            collision_events: false,
         })
     });
     register_reflect_modifier::<TrailAppearanceModifier>(registry, |module| {
@@ -566,10 +581,11 @@ is_alive = true;
             return Ok(());
         }
         let mut random = String::new();
-        if self.flipbook_random || self.mesh_variants {
-            random.push_str(&format!(
-                "let extra = source_state_component({texture}, slot, 6u);\n"
-            ));
+        if self.flipbook_random || self.mesh_variants || self.collision_events {
+            random.push_str(&format!("let extra = source_state_component({texture}, slot, 6u);\n"));
+        }
+        if self.collision_events {
+            random.push_str("if (age >= 0.0 && extra.w > 0.0) { particle.f32_7 = 2.0; }\n");
         }
         if self.flipbook_random {
             random.push_str("particle.f32_3 = extra.x;\nparticle.f32_4 = extra.y;\n");
@@ -858,6 +874,44 @@ impl Modifier for SubEmitterTransformModifier {
         context.main_code.push_str(
             "\nparticle.position = (transform * vec4<f32>(particle.position, 0.0)).xyz;\nparticle.velocity = (transform * vec4<f32>(particle.velocity, 0.0)).xyz;\n",
         );
+        Ok(())
+    }
+}
+
+impl Modifier for CollisionSubEmitterModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY, Attribute::F32_7])
+    }
+
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        context.set_emits_gpu_spawn_events(true)?;
+        let count = context.eval(module, self.count)?;
+        let dt = simulation_delta(context);
+        let floor = self.preview_floor.to_wgsl_string();
+        let child = self.child_index;
+        context.main_code.push_str(&format!(r#"
+if ({dt} > 0.0) {{
+    var hit = particle.f32_7 == 2.0;
+    if (particle.f32_7 == 0.0 && is_alive) {{
+        let previous = particle.position - particle.velocity * {dt};
+        if (particle.position.y <= {floor} && previous.y > {floor}) {{
+            let fraction = ({floor} - previous.y) / (particle.position.y - previous.y);
+            particle.position = mix(previous, particle.position, fraction);
+            particle.velocity = vec3<f32>(0.0);
+            hit = true;
+        }}
+    }}
+    if (hit) {{ append_spawn_events_{child}((*effect_metadata).base_child_index, particle_index, {count}); }}
+}}
+"#));
         Ok(())
     }
 }

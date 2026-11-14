@@ -204,6 +204,7 @@ pub fn is_spawn_event_modifier(type_path: &str) -> bool {
     matches!(
         base_name(type_path),
         "EmitSpawnEventModifier" | "ParticleSpawnEventModifier" | "TimedSubEmitterModifier"
+            | "CollisionSubEmitterModifier"
     )
 }
 
