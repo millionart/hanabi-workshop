@@ -1,21 +1,22 @@
 //! Exposes Bevy's scene depth as a Hanabi image slot for transparent effects.
 
 use bevy::{
-    asset::{AssetEventSystems, RenderAssetUsages},
+    asset::{AssetEventSystems, AssetId, RenderAssetUsages},
     camera::CameraUpdateSystems,
     core_pipeline::{
         Core3dSystems, FullscreenShader,
-        core_3d::{main_opaque_pass_3d, main_transparent_pass_3d},
+        core_3d::{AlphaMask3d, Opaque3d, main_opaque_pass_3d, main_transparent_pass_3d},
         prepass::ViewPrepassTextures,
         schedule::Core3d,
     },
     image::ImageSampler,
     prelude::*,
     render::{
-        RenderApp, RenderStartup,
+        Render, RenderApp, RenderStartup, RenderSystems,
         extract_component::{ExtractComponent, ExtractComponentPlugin},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
+        render_phase::ViewBinnedRenderPhases,
         render_resource::{
             binding_types::{texture_2d, texture_2d_multisampled},
             *,
@@ -26,7 +27,7 @@ use bevy::{
     },
     shader::{Shader, ShaderDefVal},
 };
-use bevy_hanabi::EffectMaterial;
+use bevy_hanabi::{EffectMaterial, EffectSystems};
 
 pub const SCENE_DEPTH_SLOT: &str = "scene_depth";
 pub const SCENE_COLOR_SLOT: &str = "scene_color";
@@ -53,6 +54,12 @@ impl Plugin for SceneDepthPlugin {
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
+        render.add_systems(
+            Render,
+            clear_hanabi_bins
+                .in_set(RenderSystems::Queue)
+                .before(EffectSystems::QueueEffects),
+        );
         render.add_systems(RenderStartup, prepare).add_systems(
             Core3d,
             copy_depth
@@ -106,6 +113,45 @@ impl Plugin for SceneDepthPlugin {
         let handle = app.world_mut().resource_mut::<Assets<Shader>>().add(shader);
         app.sub_app_mut(RenderApp)
             .insert_resource(DepthShader(handle));
+    }
+}
+
+fn clear_hanabi_bins(
+    mut opaque: ResMut<ViewBinnedRenderPhases<Opaque3d>>,
+    mut masked: ResMut<ViewBinnedRenderPhases<AlphaMask3d>>,
+) {
+    // Hanabi 0.20.0 bins temporary draw entities which expire at the end of each render frame.
+    let id = AssetId::<Mesh>::Uuid {
+        uuid: bevy::asset::uuid::uuid!("a36f954d-a51d-484c-bddb-4569f270076a"),
+    }
+    .untyped();
+    for phase in opaque.values_mut() {
+        let old: Vec<_> = phase
+            .non_mesh_items
+            .iter()
+            .filter(|((_, bin), _)| bin.asset_id == id)
+            .flat_map(|(_, bin)| bin.entities.keys().copied())
+            .collect();
+        for entity in old {
+            phase.remove(entity);
+        }
+        phase
+            .non_mesh_items
+            .retain(|(_, bin), _| bin.asset_id != id);
+    }
+    for phase in masked.values_mut() {
+        let old: Vec<_> = phase
+            .non_mesh_items
+            .iter()
+            .filter(|((_, bin), _)| bin.asset_id == id)
+            .flat_map(|(_, bin)| bin.entities.keys().copied())
+            .collect();
+        for entity in old {
+            phase.remove(entity);
+        }
+        phase
+            .non_mesh_items
+            .retain(|(_, bin), _| bin.asset_id != id);
     }
 }
 
