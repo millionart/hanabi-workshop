@@ -125,6 +125,10 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<CloudRemapModifier>();
     registry.write().register::<TrailSegmentModifier>();
     register_reflect_modifier::<TrailSegmentModifier>(registry, |_| Box::new(TrailSegmentModifier));
+    registry.write().register::<TrailRendererModifier>();
+    register_reflect_modifier::<TrailRendererModifier>(registry, |_| {
+        Box::new(TrailRendererModifier::default())
+    });
     registry.write().register::<BillboardGeometryModifier>();
     registry.write().register::<ParticleDistortionModifier>();
     registry.write().register::<DamageNumberModifier>();
@@ -244,6 +248,96 @@ if particle.f32_7 < 0.0 {
     out.uv = vec2<f32>(0.0);
     out.color = vec4<f32>(0.0);
     out.normal = vec3<f32>(0.0);
+    return out;
+}
+");
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
+}
+
+/// Draw one tessellated triangle from a standalone trail.
+#[derive(Clone, Copy, Debug, Default, Reflect, Serialize, Deserialize)]
+pub struct TrailRendererModifier {
+    pub corner_vertices: u32,
+    pub cap_vertices: u32,
+    pub texture_mode: u32,
+    pub local_alignment: bool,
+}
+
+impl Modifier for TrailRendererModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[
+            Attribute::POSITION,
+            Attribute::AXIS_X,
+            Attribute::AXIS_Y,
+            Attribute::F32_3,
+            Attribute::F32_4,
+            Attribute::F32_5,
+            Attribute::F32_7,
+            Attribute::F32X2_1,
+            Attribute::F32X2_3,
+            Attribute::F32X3_0,
+            Attribute::F32X3_1,
+            Attribute::F32X3_2,
+            Attribute::F32X3_3,
+            Attribute::F32X4_2,
+            Attribute::F32X4_3,
+        ])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Trail triangles belong to the vertex stage.",
+        ))
+    }
+}
+
+impl RenderModifier for TrailRendererModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_uv();
+        context.set_needs_normal();
+        context.vertex_code.push_str("
+if particle.f32_7 > 0.0 {
+    let bottom = vertex_uv.y > 0.5;
+    let right = vertex_uv.x > 0.5 && !bottom;
+    let offset = select(select(particle.f32x3_1, particle.f32x3_2, bottom), particle.f32x3_3, right);
+    let corner = select(select(particle.f32_3, particle.f32_4, bottom), particle.f32_5, right);
+    let endpoint = floor(corner);
+    let center = mix(particle.position, particle.f32x3_0, endpoint);
+    let width = mix(particle.f32x2_3.x, particle.f32x2_3.y, endpoint);
+    out.position = view.clip_from_world * vec4<f32>(center + offset * width, 1.0);
+    out.normal = mix(particle.axis_x, particle.axis_y, endpoint);
+    out.uv = vec2<f32>(mix(particle.f32x2_1.x, particle.f32x2_1.y, endpoint), fract(corner) * 2.0);
+    out.color = mix(particle.f32x4_2, particle.f32x4_3, endpoint);
+    return out;
+}
+if particle.f32_7 < 0.0 {
+    out.position = vec4<f32>(0.0);
+    out.normal = vec3<f32>(0.0);
+    out.uv = vec2<f32>(0.0);
+    out.color = vec4<f32>(0.0);
     return out;
 }
 ");

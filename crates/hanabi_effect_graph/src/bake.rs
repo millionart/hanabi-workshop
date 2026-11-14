@@ -1352,7 +1352,7 @@ pub fn bake_emitter_with_provenance(
         modifier
             .as_reflect()
             .downcast_ref::<crate::particle_motion::ParticleSnapshotModifier>()
-            .is_some_and(|snapshot| snapshot.trail_segments)
+            .is_some_and(|snapshot| snapshot.trail_segments || snapshot.trail_triangles)
     });
     let uses_authored_motion = uses_trail_snapshot
         || update.iter().any(|modifier| {

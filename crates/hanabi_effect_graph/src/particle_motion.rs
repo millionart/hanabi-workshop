@@ -102,6 +102,8 @@ pub struct ParticleSnapshotModifier {
     pub mesh_variants: bool,
     #[serde(default)]
     pub trail_segments: bool,
+    #[serde(default)]
+    pub trail_triangles: bool,
 }
 
 /// Evaluate the authored trail curves at the two original endpoints.
@@ -111,6 +113,8 @@ pub struct TrailAppearanceModifier {
     pub width: ExprHandle,
     pub first_color: ExprHandle,
     pub color: ExprHandle,
+    #[serde(default)]
+    pub apply_to_preview: bool,
 }
 
 pub const PARTICLE_STATE_SLOT: &str = "particle_state";
@@ -229,6 +233,7 @@ pub fn register(registry: &AppTypeRegistry) {
             flipbook_random: false,
             mesh_variants: false,
             trail_segments: false,
+            trail_triangles: false,
         })
     });
     register_reflect_modifier::<TrailAppearanceModifier>(registry, |module| {
@@ -239,6 +244,7 @@ pub fn register(registry: &AppTypeRegistry) {
             width,
             first_color: color,
             color,
+            apply_to_preview: false,
         })
     });
 }
@@ -257,6 +263,7 @@ impl Modifier for TrailAppearanceModifier {
             Attribute::F32X4_1,
             Attribute::F32X4_2,
             Attribute::F32X4_3,
+            Attribute::HDR_COLOR,
         ])
     }
     fn boxed_clone(&self) -> BoxedModifier {
@@ -267,13 +274,18 @@ impl Modifier for TrailAppearanceModifier {
         let width = context.eval(module, self.width)?;
         let first_color = context.eval(module, self.first_color)?;
         let color = context.eval(module, self.color)?;
+        let preview = if self.apply_to_preview {
+            format!("else {{ particle.size3 = vec3<f32>({width}); particle.hdr_color = {color}; }}")
+        } else {
+            String::new()
+        };
         context.main_code.push_str(&format!(
             "
 if particle.f32_7 > 0.0 {{
     particle.f32x2_3 = particle.size3.xy * vec2<f32>({first_width}, {width});
     particle.f32x4_2 = vec4<f32>(particle.f32x4_0.xyz, particle.f32x2_2.x) * ({first_color});
     particle.f32x4_3 = vec4<f32>(particle.f32x4_1.xyz, particle.f32x2_2.y) * ({color});
-}}
+}} {preview}
 "
         ));
         Ok(())
@@ -299,7 +311,11 @@ impl Modifier for ParticleSnapshotModifier {
             Attribute::F32X3_2,
             Attribute::HDR_COLOR,
         ];
-        if !self.flipbook_random && !self.mesh_variants && !self.trail_segments {
+        if !self.flipbook_random
+            && !self.mesh_variants
+            && !self.trail_segments
+            && !self.trail_triangles
+        {
             return Cow::Borrowed(ATTRIBUTES);
         }
         let mut attributes = ATTRIBUTES.to_vec();
@@ -319,6 +335,23 @@ impl Modifier for ParticleSnapshotModifier {
                 Attribute::F32_1,
             ]);
         }
+        if self.trail_triangles {
+            attributes.extend([
+                Attribute::AXIS_X,
+                Attribute::AXIS_Y,
+                Attribute::F32_1,
+                Attribute::F32_2,
+                Attribute::F32_3,
+                Attribute::F32_4,
+                Attribute::F32_5,
+                Attribute::F32X2_2,
+                Attribute::F32X3_0,
+                Attribute::F32X3_1,
+                Attribute::F32X3_3,
+                Attribute::F32X4_0,
+                Attribute::F32X4_1,
+            ]);
+        }
         Cow::Owned(attributes)
     }
     fn boxed_clone(&self) -> BoxedModifier {
@@ -335,8 +368,45 @@ impl Modifier for ParticleSnapshotModifier {
                 .push_str(include_str!("particle_snapshot.wesl"));
         }
         let texture = format!("material_texture_{}", self.particle_state_slot);
+        if self.trail_triangles {
+            context.main_code.push_str(&format!(
+                "
+if (({active}) != 0u) {{
+    let a = source_state_component({texture}, particle_index, 0u);
+    let b = source_state_component({texture}, particle_index, 1u);
+    let c = source_state_component({texture}, particle_index, 2u);
+    let first = source_state_component({texture}, particle_index, 3u);
+    let second = source_state_component({texture}, particle_index, 4u);
+    let first_normal = source_state_component({texture}, particle_index, 5u);
+    let second_normal = source_state_component({texture}, particle_index, 6u);
+    particle.position = first.xyz;
+    particle.f32x3_0 = second.xyz;
+    particle.f32x3_1 = a.xyz;
+    particle.f32x3_2 = b.xyz;
+    particle.f32x3_3 = c.xyz;
+    particle.f32_3 = a.w;
+    particle.f32_4 = b.w;
+    particle.f32_5 = c.w;
+    particle.f32_1 = first.w;
+    particle.f32_2 = second.w;
+    particle.axis_x = first_normal.xyz;
+    particle.axis_y = second_normal.xyz;
+    particle.f32x2_1 = vec2<f32>(first_normal.w, second_normal.w);
+    particle.f32x2_2 = vec2<f32>(1.0);
+    particle.f32x4_0 = vec4<f32>(1.0);
+    particle.f32x4_1 = vec4<f32>(1.0);
+    particle.size3 = vec3<f32>(1.0);
+    particle.f32_7 = select(-1.0, 1.0, a.w >= 0.0);
+    particle.age = 0.0;
+    is_alive = true;
+}}
+"
+            ));
+            return Ok(());
+        }
         if self.trail_segments {
-            context.main_code.push_str(&format!("
+            context.main_code.push_str(&format!(
+                "
 if (({active}) != 0u) {{
 let first = source_state_component({texture}, particle_index, 0u);
 let second = source_state_component({texture}, particle_index, 1u);
@@ -357,7 +427,8 @@ particle.f32_7 = select(-1.0, 1.0, first.w >= 0.0);
 particle.age = 0.0;
 is_alive = true;
 }}
-"));
+"
+            ));
             return Ok(());
         }
         let mut random = String::new();
