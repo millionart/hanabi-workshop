@@ -81,7 +81,7 @@ fn source_mesh_color(data: texture_2d<f32>, triangle: EmissionTriangle) -> vec4<
     for (var i = 0; i < 3; i += 1) {
         let rgba = vec4<u32>(floor(source_mesh_texel(data, triangle.origin + vec2<i32>(i + 7, 0)) * 255.0 + 0.5));
         let product = rgba * weights[i] + 128u;
-        total += (product + (product >> 8u)) >> 8u;
+        total += (product + (product >> vec4<u32>(8u))) >> vec4<u32>(8u);
     }
     return min(total, vec4<u32>(255u));
 }

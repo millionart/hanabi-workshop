@@ -280,7 +280,7 @@ impl Modifier for EmissionShapeModifier {
             let texture = format!("material_texture_{}", self.shape_data_slot);
             let color = if self.use_mesh_colors {
                 format!(
-                    "let tint = source_mesh_color({texture}, lookup);\nlet initial = vec4<u32>(floor(particle.hdr_color * 255.0 + 0.5));\nlet product = initial * tint + 128u;\nparticle.hdr_color = vec4<f32>((product + (product >> 8u)) >> 8u) / 255.0;\n"
+                    "let tint = source_mesh_color({texture}, lookup);\nlet initial = vec4<u32>(floor(particle.hdr_color * 255.0 + 0.5));\nlet product = initial * tint + 128u;\nparticle.hdr_color = vec4<f32>((product + (product >> vec4<u32>(8u))) >> vec4<u32>(8u)) / 255.0;\n"
                 )
             } else {
                 String::new()
