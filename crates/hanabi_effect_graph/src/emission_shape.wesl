@@ -89,7 +89,7 @@ fn source_mesh_color(data: texture_2d<f32>, triangle: EmissionTriangle) -> vec4<
 fn source_shape_sample(kind: u32, mode: u32, radius: f32, thickness: f32,
     minor_radius: f32, cone: f32, cone_length: f32, extent: f32, spread: f32,
     random_dir: f32, random_position: f32, spherical: f32, phase: f32,
-    counter: u32, burst_size: u32, scale: vec3<f32>) -> mat2x3<f32> {
+    counter: u32, burst_size: u32, scale: vec3<f32>, box_thickness: vec3<f32>) -> mat2x3<f32> {
     let tau = bitcast<f32>(0x40c90fdau);
     let fallback = vec3<f32>(0.0, 0.0, 1.0);
     var position = vec3<f32>(0.0);
@@ -134,6 +134,13 @@ fn source_shape_sample(kind: u32, mode: u32, radius: f32, thickness: f32,
             }
         }
         case 5u: { position = frand3() - 0.5; }
+        case 15u: {
+            var box = frand3();
+            seed = pcg_hash(seed);
+            let axis = seed % 3u;
+            box[axis] = select(0.0, 1.0, box[axis] >= 0.5);
+            position = box * (1.0 - frand3() * box_thickness) - 0.5;
+        }
         case 12u: {
             var value = 0.0;
             let ratio = phase / max(radius, 1e-20);

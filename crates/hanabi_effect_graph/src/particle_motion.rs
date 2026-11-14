@@ -74,12 +74,16 @@ pub struct EmissionShapeModifier {
     pub speed: ExprHandle,
     pub phase: ExprHandle,
     pub burst_size: ExprHandle,
+    #[serde(default)]
+    pub hierarchy_scale: Option<ExprHandle>,
     pub shape: u32,
     pub center: Vec3,
     pub scale: Vec3,
     pub orientation: Vec4,
     pub radius: f32,
     pub radius_thickness: f32,
+    #[serde(default)]
+    pub box_thickness: Vec3,
     pub minor_radius: f32,
     pub cone_angle: f32,
     pub cone_length: f32,
@@ -309,12 +313,14 @@ pub fn register(registry: &AppTypeRegistry) {
             speed: module.lit(1_f32),
             phase: module.lit(-1_f32),
             burst_size: module.lit(1_u32),
+            hierarchy_scale: None,
             shape: 0,
             center: Vec3::ZERO,
             scale: Vec3::ONE,
             orientation: Vec4::W,
             radius: 1.,
             radius_thickness: 1.,
+            box_thickness: Vec3::ZERO,
             minor_radius: 0.2,
             cone_angle: 0.5,
             cone_length: 0.,
@@ -643,6 +649,10 @@ impl Modifier for EmissionShapeModifier {
         let [x, y, z, w] = self.orientation.to_array();
         let center = vector(self.center);
         let scale = vector(self.scale);
+        let hierarchy_scale = match self.hierarchy_scale {
+            Some(scale) => context.eval(module, scale)?,
+            None => "vec3<f32>(1.0)".into(),
+        };
         let aligned = if self.align_to_direction {
             "let horizontal = dot(direction.xz, direction.xz);\nlet yaw = select(select(3.14159265359, -sign(direction.y) * 1.57079632679, direction.y != 0.0), atan2(direction.x, -direction.z), horizontal > 1e-30);\nparticle.f32x2_0 += vec2<f32>(-atan2(direction.y, sqrt(horizontal)), yaw);"
         } else {
@@ -668,7 +678,7 @@ impl Modifier for EmissionShapeModifier {
             )
         } else {
             format!(
-                "let phase = select(sim_params.time * {:?}, {phase}, {phase} >= 0.0);\nlet sample = source_shape_sample({}u, {}u, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, phase, particle_counter, {count}, {scale});",
+                "let phase = select(sim_params.time * {:?}, {phase}, {phase} >= 0.0);\nlet sample = source_shape_sample({}u, {}u, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, phase, particle_counter, {count}, {scale}, {});",
                 self.phase_speed,
                 self.shape,
                 self.arc_mode,
@@ -681,10 +691,11 @@ impl Modifier for EmissionShapeModifier {
                 self.arc_spread,
                 self.random_direction,
                 self.random_position,
-                self.spherical_direction
+                self.spherical_direction,
+                vector(self.box_thickness),
             )
         };
-        context.main_code.push_str(&format!("\n{{\n{sample}\nlet rotation = vec4<f32>({x:?}, {y:?}, {z:?}, {w:?});\nlet direction = source_shape_rotate(rotation, sample[1]);\nlet mirror = vec3<f32>(1.0, 1.0, -1.0);\nparticle.position = (source_shape_rotate(rotation, sample[0] * {scale}) + {center}) * mirror;\nparticle.velocity = direction * mirror * ({speed});\n{aligned}\n}}\n"));
+        context.main_code.push_str(&format!("\n{{\n{sample}\nlet rotation = vec4<f32>({x:?}, {y:?}, {z:?}, {w:?});\nlet direction = source_shape_rotate(rotation, sample[1]);\nlet mirror = vec3<f32>(1.0, 1.0, -1.0);\nparticle.position = (source_shape_rotate(rotation, sample[0] * {scale}) + {center}) * mirror * {hierarchy_scale};\nparticle.velocity = direction * mirror * ({speed});\n{aligned}\n}}\n"));
         Ok(())
     }
 }
