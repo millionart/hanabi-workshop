@@ -148,16 +148,17 @@ struct Roundtrip<'w, 's> {
         'w,
         's,
         (
+            &'static document::SceneEmitter,
             &'static bevy_hanabi::CompiledParticleEffect,
-            &'static bevy_hanabi::EffectSpawner,
+            &'static mut bevy_hanabi::EffectSpawner,
         ),
-        With<document::SceneEmitter>,
     >,
     edits: MessageWriter<'w, edits::EditRequest>,
     files: MessageWriter<'w, app_commands::AppCommand>,
     exits: MessageWriter<'w, AppExit>,
     edited: Local<'s, Option<RoundtripValue>>,
     saving: Local<'s, bool>,
+    started: Local<'s, bool>,
 }
 
 struct RoundtripValue {
@@ -233,10 +234,25 @@ impl Roundtrip<'_, '_> {
             self.exits.write(AppExit::Success);
             return;
         }
+        if self.preview.iter().count() != content.preview_emitter_ids().count()
+            || !self.preview.iter().all(|(_, effect, _)| effect.is_ready())
+        {
+            return;
+        }
+        if !*self.started {
+            for (scene, _, mut spawner) in &mut self.preview {
+                if content.emitter_parent(scene.0).is_none() && !spawner.settings.starts_active() {
+                    spawner.active = true;
+                    spawner.reset();
+                }
+            }
+            *self.started = true;
+            return;
+        }
         if !self
             .preview
             .iter()
-            .any(|(effect, spawner)| effect.is_ready() && spawner.completed_cycle_count() > 0)
+            .any(|(_, _, spawner)| spawner.completed_cycle_count() > 0)
         {
             return;
         }
