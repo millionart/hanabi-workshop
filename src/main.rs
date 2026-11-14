@@ -275,6 +275,11 @@ impl Roundtrip<'_, '_> {
                         return None;
                     };
                     let (field, priority) = match type_path.rsplit("::").next()? {
+                        "TimedSubEmitterModifier"
+                            if matches!(config.get("burst_count"), Some(EditValue::U32(count)) if *count > 0) =>
+                        {
+                            ("burst_count", 0)
+                        }
                         "TimedSubEmitterModifier" => ("particles_per_second", 0),
                         "SnowToppedParticleModifier" => ("depth", 0),
                         "TrailRendererModifier" => ("corner_vertices", 1),
