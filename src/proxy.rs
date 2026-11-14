@@ -578,12 +578,28 @@ pub fn build_proxy(
     // (3) Transitively expand through operand expressions.
     expand_via_module_labeled(&mut labels, proxy.module());
 
+    // Hanabi derives random function suffixes from the operand expressions.
+    // A property read has no type in Expr::value_type(), even with a typed property layout.
+    let typed_operands: HashSet<_> = labels
+        .keys()
+        .filter_map(|handle| match proxy.module().get(*handle) {
+            Some(Expr::Binary { op, left, right }) if op.needs_type_suffix() => {
+                Some([*left, *right])
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+
     // Snapshot (handle, value) for promotion — stable order by handle index.
     // The `labels` map's values are unused now; only its key set (the
     // init/update-reachable handles) drives promotion.
     let mut to_promote: Vec<(ExprHandle, Value)> = labels
         .iter()
         .filter_map(|(h, _)| {
+            if typed_operands.contains(h) {
+                return None;
+            }
             let Some(Expr::Literal(lit)) = proxy.module().get(*h) else {
                 return None;
             };
@@ -837,6 +853,30 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn random_bounds_keep_their_types_in_the_preview() {
+        let mut module = Module::default();
+        let position = module.lit(Vec3::ZERO);
+        let min = module.lit(0.1_f32);
+        let max = module.lit(1_f32);
+        let random = module.binary(
+            bevy_hanabi::graph::expr::BinaryOperator::UniformRand,
+            min,
+            max,
+        );
+        let canonical = EffectAsset::new(16, SpawnerSettings::default(), module)
+            .init(SetAttributeModifier::new(Attribute::POSITION, position))
+            .init(SetAttributeModifier::new(Attribute::LIFETIME, random));
+        let (proxy, bindings) = build_proxy(&canonical, &StdHashMap::new());
+        assert!(bindings.iter().any(|b| b.canonical_expr == position));
+        assert!(
+            bindings
+                .iter()
+                .all(|b| ![min, max].contains(&b.canonical_expr))
+        );
+        bevy_hanabi::EffectShaderSources::generate(&proxy, None, 0).unwrap();
+    }
 
     /// A literal reachable through a render modifier supports live tweaking.
     ///
