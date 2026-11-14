@@ -667,7 +667,12 @@ impl RenderModifier for DamageNumberModifier {
         let transform = vec4(self.texture_transform);
         let tint = vec4(self.tint);
         let critical = vec4(self.critical);
-        context.fragment_code.push_str(&format!("\n{{\nlet st = {transform};\nlet coords = uv * st.xy + st.zw;\nif (coords.x > 1.0) {{ discard; }}\nlet glyph = select(vec2<f32>(1234.0, 0.0), particle.f32x2_1, particle.f32x2_1.x != 0.0);\nlet atlas = number_atlas_uv(coords, glyph.x, {:?});\nlet texel = textureSample(material_texture_{slot}, material_sampler_{slot}, atlas);\nlet edge = (1.0 - texel.r) * clamp(glyph.y, 0.0, 1.0) * texel.a;\ncolor *= mix(texel, {critical}, edge) * {tint};\n}}\n", self.character_limit, slot = self.atlas_slot));
+        let uses_snapshot = if context.particle_layout.contains(Attribute::F32_7) {
+            "particle.f32_7 > 0.0"
+        } else {
+            "false"
+        };
+        context.fragment_code.push_str(&format!("\n{{\nlet st = {transform};\nlet coords = uv * st.xy + st.zw;\nif (coords.x > 1.0) {{ discard; }}\nlet glyph = select(vec2<f32>(1234.0, 0.0), particle.f32x2_1, {uses_snapshot});\nlet atlas = number_atlas_uv(coords, glyph.x, {:?});\nlet texel = textureSample(material_texture_{slot}, material_sampler_{slot}, atlas);\nlet edge = (1.0 - texel.r) * clamp(glyph.y, 0.0, 1.0) * texel.a;\ncolor *= mix(texel, {critical}, edge) * {tint};\n}}\n", self.character_limit, slot = self.atlas_slot));
         Ok(())
     }
     fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
