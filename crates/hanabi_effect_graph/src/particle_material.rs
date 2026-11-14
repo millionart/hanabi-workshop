@@ -111,6 +111,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<DamageNumberModifier>();
     registry.write().register::<SnapshotColorModifier>();
     registry.write().register::<SurfaceLightingModifier>();
+    registry.write().register::<LegacyParticleModifier>();
     register_reflect_modifier::<CloudRemapModifier>(registry, |_| {
         Box::new(CloudRemapModifier::default())
     });
@@ -145,6 +146,86 @@ pub fn register(registry: &AppTypeRegistry) {
             reflectance: 0.,
         })
     });
+    register_reflect_modifier::<LegacyParticleModifier>(registry, |_| {
+        Box::new(LegacyParticleModifier {
+            texture_slot: 0,
+            scene_depth_slot: 0,
+            texture_uv: Vec4::new(1., 1., 0., 0.),
+            tint: Vec4::ONE,
+            inverse_fade: 0.,
+            mode: 0,
+        })
+    });
+}
+
+/// Legacy alpha, additive, soft additive and premultiplied particle shaders.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct LegacyParticleModifier {
+    pub texture_slot: u32,
+    pub scene_depth_slot: u32,
+    pub texture_uv: Vec4,
+    pub tint: Vec4,
+    pub inverse_fade: f32,
+    pub mode: u32,
+}
+
+impl Modifier for LegacyParticleModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Legacy particle material is a fragment modifier.",
+        ))
+    }
+}
+
+impl RenderModifier for LegacyParticleModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_uv();
+        let uv_scale = vec2(self.texture_uv.truncate().truncate());
+        let uv_offset = vec2(Vec2::new(self.texture_uv.z, self.texture_uv.w));
+        let slot = self.texture_slot;
+        let mut code = format!(
+            "\n{{\nlet texel = textureSample(material_texture_{slot}, material_sampler_{slot}, uv * {uv_scale} + {uv_offset});\nvar fade = 1.0;\n"
+        );
+        if self.inverse_fade > 0. {
+            code.push_str(&format!("let raw = textureLoad(material_texture_{}, vec2<i32>(in.position.xy), 0);\nlet ndc_depth = raw.x + raw.y / 2048.0;\nif (ndc_depth > 0.0) {{\nlet scene_h = view.view_from_clip * vec4<f32>(0.0, 0.0, ndc_depth, 1.0);\nlet fragment_h = view.view_from_clip * vec4<f32>(0.0, 0.0, in.position.z, 1.0);\nfade = clamp((-scene_h.z / scene_h.w + fragment_h.z / fragment_h.w) * {:?}, 0.0, 1.0);\n}}\n", self.scene_depth_slot, self.inverse_fade));
+        }
+        let [r, g, b, a] = self.tint.to_array();
+        match self.mode {
+            1 => code.push_str(&format!("color *= 2.0 * texel * vec4<f32>({r:?},{g:?},{b:?},{a:?});\ncolor.a = clamp(color.a * fade, 0.0, 1.0);\n")),
+            2 => code.push_str("color *= texel;\ncolor.a *= fade;\n"),
+            3 => code.push_str("color.a *= fade;\ncolor = texel * color * color.a;\n"),
+            _ => code.push_str(&format!("color *= texel * vec4<f32>({r:?},{g:?},{b:?},{a:?});\n")),
+        }
+        code.push_str("}\n");
+        context.fragment_code.push_str(&code);
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
 }
 
 /// Light an opaque particle with the scene's principal and ambient lights.
