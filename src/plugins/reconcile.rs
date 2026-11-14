@@ -20,6 +20,7 @@ use bevy::{
 use bevy_egui::{EguiTextureHandle, EguiUserTextures};
 use bevy_hanabi::{EffectAsset, EffectMaterial, EffectSpawner, SlotDimension};
 use hanabi_effect_graph::model::EmitterId;
+use hanabi_effect_graph::scene_depth::{SCENE_DEPTH_SLOT, SceneDepth, SceneDepthCamera};
 
 use crate::{
     document::{
@@ -42,10 +43,12 @@ pub struct TexturePlaceholder {
     d1: Handle<Image>,
     d2: Handle<Image>,
     d3: Handle<Image>,
+    scene_depth: Handle<Image>,
 }
 
 impl FromWorld for TexturePlaceholder {
     fn from_world(world: &mut World) -> Self {
+        let scene_depth = world.resource::<SceneDepth>().0.clone();
         let mut images = world.resource_mut::<Assets<Image>>();
         let mut placeholder = |dimension| {
             images.add(Image::new_fill(
@@ -64,11 +67,31 @@ impl FromWorld for TexturePlaceholder {
             d1: placeholder(TextureDimension::D1),
             d2: placeholder(TextureDimension::D2),
             d3: placeholder(TextureDimension::D3),
+            scene_depth,
         }
     }
 }
 
 impl TexturePlaceholder {
+    pub(crate) fn bind(
+        &self,
+        planned: &hanabi_effect_graph::bake::PlannedTexture,
+        assets: &AssetServer,
+    ) -> Handle<Image> {
+        match &planned.image {
+            PlannedImage::Asset(path) => assets
+                .load_builder()
+                .override_unapproved()
+                .load(path.clone()),
+            PlannedImage::Runtime(name) if name.as_ref() == SCENE_DEPTH_SLOT => {
+                self.scene_depth.clone()
+            }
+            PlannedImage::Runtime(_) | PlannedImage::Unbound => {
+                self.for_slot_dimension(planned.dimension)
+            }
+        }
+    }
+
     /// Return a placeholder compatible with a supported Hanabi slot dimension.
     pub fn for_slot_dimension(&self, dimension: SlotDimension) -> Handle<Image> {
         match dimension {
@@ -301,26 +324,10 @@ fn ensure_scene_root(
             continue; // guarded above, but stay defensive
         };
 
-        // One image handle per texture slot, ordered by slot index to match
-        // the baked module's texture layout. Editor-known assets load from
-        // disk; host (runtime) and unbound slots fall back to a white
-        // placeholder.
         let images: Vec<Handle<Image>> = record
             .texture_plan
             .iter()
-            .map(|planned| match &planned.image {
-                // The artist's chosen image lives outside the `assets/`
-                // folder, so it is an "unapproved" path; `load_override`
-                // opts these specific loads past the asset server's `Deny`
-                // policy.
-                PlannedImage::Asset(path) => asset_server
-                    .load_builder()
-                    .override_unapproved()
-                    .load(path.clone()),
-                PlannedImage::Runtime(_) | PlannedImage::Unbound => {
-                    placeholder.for_slot_dimension(planned.dimension)
-                }
-            })
+            .map(|planned| placeholder.bind(planned, asset_server))
             .collect();
 
         // Seed the instance's properties with the values tweaked since the
@@ -481,6 +488,7 @@ fn spawn_viewport_camera(
         .spawn((
             cam,
             Camera3d::default(),
+            SceneDepthCamera,
             Camera {
                 // Lower than the primary egui camera (order 0). All viewport
                 // cameras share order -1; they render to separate targets so

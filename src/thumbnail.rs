@@ -32,10 +32,10 @@ use bevy::{
 use bevy_egui::{EguiTextureHandle, EguiUserTextures};
 use bevy_hanabi::{EffectAsset, EffectMaterial, EffectProperties, ParticleEffect};
 use hanabi_effect_graph::model::{EffectGraph, EmitterId};
+use hanabi_effect_graph::scene_depth::SceneDepthCamera;
 
 use crate::{
     document::{EmitterRecord, RenderLayerPool, bake_effect_records, next_preview_tag},
-    effect_graph::bake::PlannedImage,
     plugins::reconcile::TexturePlaceholder,
 };
 
@@ -382,6 +382,7 @@ fn spawn_thumbnail_scene(
         let eye = Vec3::new(2.6, 1.8, 3.8);
         p.spawn((
             Camera3d::default(),
+            SceneDepthCamera,
             Camera {
                 order: -1,
                 clear_color: ClearColorConfig::Custom(Color::BLACK),
@@ -410,15 +411,7 @@ fn spawn_thumbnail_scene(
         let images: Vec<Handle<Image>> = record
             .texture_plan
             .iter()
-            .map(|planned| match &planned.image {
-                PlannedImage::Asset(path) => asset_server
-                    .load_builder()
-                    .override_unapproved()
-                    .load(path.clone()),
-                PlannedImage::Runtime(_) | PlannedImage::Unbound => {
-                    placeholder.for_slot_dimension(planned.dimension)
-                }
-            })
+            .map(|planned| placeholder.bind(planned, asset_server))
             .collect();
 
         let mut emitter_cmds = commands.spawn((

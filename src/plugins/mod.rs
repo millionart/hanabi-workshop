@@ -18,6 +18,7 @@ impl PluginGroup for EditorPlugins {
     fn build(self) -> PluginGroupBuilder {
         PluginGroupBuilder::start::<Self>()
             .add(HanabiPlugin)
+            .add(hanabi_effect_graph::scene_depth::SceneDepthPlugin)
             .add(EguiPlugin::default())
             .add(EditorPlugin)
     }

@@ -50,6 +50,16 @@ pub struct CloudRemapModifier {
     pub rim_power: f32,
     #[serde(default)]
     pub use_vertex_red_as_alpha: bool,
+    #[serde(default)]
+    pub scene_depth_slot: u32,
+    #[serde(default)]
+    pub inverse_fade: f32,
+    #[serde(default)]
+    pub depth_offset: f32,
+    #[serde(default)]
+    pub fade_close_distance: f32,
+    #[serde(default)]
+    pub soft_power: f32,
 }
 
 impl Default for CloudRemapModifier {
@@ -85,6 +95,11 @@ impl Default for CloudRemapModifier {
             rim_strength: 0.,
             rim_power: 1.,
             use_vertex_red_as_alpha: false,
+            scene_depth_slot: 0,
+            inverse_fade: 0.,
+            depth_offset: 0.,
+            fade_close_distance: 0.,
+            soft_power: 1.,
         }
     }
 }
@@ -228,6 +243,22 @@ impl RenderModifier for CloudRemapModifier {
             context.fragment_code.push_str(&code);
             return Ok(());
         }
+        let depth_fade = self.inverse_fade > 0. && (self.intersection || self.use_ramp);
+        if depth_fade {
+            code.push_str(&format!("var depth_fade = 1.0;\nlet scene_sample = textureLoad(material_texture_{}, vec2<i32>(in.position.xy), 0);\nif (scene_sample.b > 0.0) {{\nlet raw_depth = scene_sample.r + scene_sample.g / 2048.0;\nlet scene_h = view.view_from_clip * vec4<f32>(0.0, 0.0, raw_depth, 1.0);\nlet fragment_h = view.view_from_clip * vec4<f32>(0.0, 0.0, in.position.z, 1.0);\nlet fragment_depth = -fragment_h.z / fragment_h.w;\nif (raw_depth > 0.0) {{\nlet scene_depth = -scene_h.z / scene_h.w;\ndepth_fade = clamp((scene_depth - fragment_depth - {:?}) * {:?}, 0.0, 1.0);\n}}\n", self.scene_depth_slot, self.depth_offset, self.inverse_fade));
+            if self.intersection {
+                code.push_str(&format!(
+                    "depth_fade = pow(depth_fade, {:?});\n",
+                    self.soft_power
+                ));
+            } else if self.fade_close_distance > 0. {
+                code.push_str(&format!(
+                    "depth_fade *= clamp((fragment_depth + {:?} - 0.5) * {:?}, 0.0, 1.0);\n",
+                    self.depth_offset, self.fade_close_distance
+                ));
+            }
+            code.push_str("}\n");
+        }
         if self.intersection {
             context.set_needs_normal();
             fragment_world_position(&mut code);
@@ -241,7 +272,12 @@ impl RenderModifier for CloudRemapModifier {
             } else {
                 "1.0"
             };
-            code.push_str(&format!("let facing = abs(dot(normalize(view.world_position - world_h.xyz / world_h.w), normalize(normal)));\nlet rim = pow(1.0 - clamp(facing, 0.0, 1.0), {:?}) * {:?};\nlet ramp_x = clamp(rim * alpha * {:?}, 0.0, 1.0);\nlet ramp = {sample_ramp};\ncolor = ramp * vec4<f32>({:?}, {:?}, {:?}, {:?}) * vec4<f32>({:?}, {:?}, {:?}, {vertex_alpha});\n}}\n", self.rim_power, self.rim_strength, self.intersection_strength * self.alpha_boost * self.opacity * 4., self.tint.x, self.tint.y, self.tint.z, self.tint.w, self.boost, self.boost, self.boost));
+            let rim = if depth_fade {
+                "rim + 1.0 - depth_fade"
+            } else {
+                "rim"
+            };
+            code.push_str(&format!("let facing = abs(dot(normalize(view.world_position - world_h.xyz / world_h.w), normalize(normal)));\nlet rim = pow(1.0 - clamp(facing, 0.0, 1.0), {:?}) * {:?};\nlet ramp_x = clamp(({rim}) * alpha * {:?}, 0.0, 1.0);\nlet ramp = {sample_ramp};\ncolor = ramp * vec4<f32>({:?}, {:?}, {:?}, {:?}) * vec4<f32>({:?}, {:?}, {:?}, {vertex_alpha});\n}}\n", self.rim_power, self.rim_strength, self.intersection_strength * self.alpha_boost * self.opacity * 4., self.tint.x, self.tint.y, self.tint.z, self.tint.w, self.boost, self.boost, self.boost));
             context.fragment_code.push_str(&code);
             return Ok(());
         }
@@ -259,8 +295,9 @@ impl RenderModifier for CloudRemapModifier {
             ""
         };
         let ramp = if self.use_ramp {
+            let depth = if depth_fade { " * depth_fade" } else { "" };
             let coords = format!(
-                "vec2<f32>((alpha * {:?} + {:?}) * {:?}{fade}, 0.5)",
+                "vec2<f32>((alpha * {:?} + {:?}) * {:?}{fade}{depth}, 0.5)",
                 self.alpha_boost, self.alpha_bias, self.opacity
             );
             sample(self.ramp_slot, &uv(&coords, self.ramp_uv))

@@ -30,6 +30,8 @@ pub mod modifier_registry;
 pub mod particle_material;
 pub mod particle_motion;
 pub mod processor;
+#[cfg(feature = "3d")]
+pub mod scene_depth;
 pub mod schema;
 pub mod validation;
 
