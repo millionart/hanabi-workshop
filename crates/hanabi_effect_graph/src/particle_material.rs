@@ -10,6 +10,8 @@ use bevy_hanabi::{
 };
 use serde::{Deserialize, Serialize};
 
+pub const PARTICLE_MESH_UV_STRIDE: f32 = 64.;
+
 /// Map particle opacity through a color ramp, optionally using a scrolling cloud mask.
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct CloudRemapModifier {
@@ -818,6 +820,8 @@ pub struct BillboardGeometryModifier {
     pub velocity_scale: f32,
     pub pivot: bevy::math::Vec3,
     pub local_particles: bool,
+    #[serde(default)]
+    pub mesh_variants: bool,
     #[serde(default = "default_render_alignment")]
     pub render_alignment: u32,
 }
@@ -836,6 +840,7 @@ impl Default for BillboardGeometryModifier {
             velocity_scale: 0.,
             pivot: bevy::math::Vec3::ZERO,
             local_particles: true,
+            mesh_variants: false,
             render_alignment: default_render_alignment(),
         }
     }
@@ -855,14 +860,20 @@ impl Modifier for BillboardGeometryModifier {
         Some(self)
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        Cow::Borrowed(&[
+        const ATTRIBUTES: &[Attribute] = &[
             Attribute::POSITION,
             Attribute::SIZE3,
             Attribute::VELOCITY,
             Attribute::F32_0,
             Attribute::F32X2_0,
             Attribute::F32X3_2,
-        ])
+            Attribute::F32_5,
+        ];
+        Cow::Borrowed(if self.mesh_variants {
+            ATTRIBUTES
+        } else {
+            &ATTRIBUTES[..ATTRIBUTES.len() - 1]
+        })
     }
     fn boxed_clone(&self) -> BoxedModifier {
         Box::new(*self)
@@ -879,6 +890,10 @@ impl Modifier for BillboardGeometryModifier {
 impl RenderModifier for BillboardGeometryModifier {
     fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
         let mut code = String::from("\n{\n");
+        if self.mesh_variants {
+            context.set_needs_uv();
+            code.push_str(&format!("let variant = floor(vertex_uv.x / {PARTICLE_MESH_UV_STRIDE:?} + 0.5);\nlet selected_variant = particle.f32_5;\nif (variant != selected_variant) {{\n    out.position = vec4<f32>(0.0);\n    out.uv = vec2<f32>(0.0);\n    out.color = vec4<f32>(0.0);\n    @if(NEEDS_NORMAL) out.normal = vec3<f32>(0.0);\n    return out;\n}}\nout.uv.x -= variant * {PARTICLE_MESH_UV_STRIDE:?};\n"));
+        }
         if self.orientation == 1 {
             code.push_str(&format!(
                 "let vel = length(particle.velocity);\nlet aim = select(vec3<f32>(0.0, 1.0, 0.0), particle.velocity / max(vel, 1e-6), vel > 1e-6);\n\
