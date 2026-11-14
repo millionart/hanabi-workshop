@@ -282,6 +282,7 @@ impl Roundtrip<'_, '_> {
                         }
                         "TimedSubEmitterModifier" => ("particles_per_second", 0),
                         "SnowToppedParticleModifier" => ("depth", 0),
+                        "SolidParallaxModifier" => ("parallax", 0),
                         "TrailRendererModifier" => ("corner_vertices", 1),
                         "ParticleLightsModifier" => ("intensity", 1),
                         _ => return None,

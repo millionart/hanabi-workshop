@@ -135,6 +135,19 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<SnapshotColorModifier>();
     registry.write().register::<SurfaceLightingModifier>();
     registry.write().register::<TerrainParticleModifier>();
+    registry.write().register::<SolidParallaxModifier>();
+    register_reflect_modifier::<SolidParallaxModifier>(registry, |_| {
+        Box::new(SolidParallaxModifier {
+            height1_uv: Vec4::new(1., 1., 0., 0.),
+            height2_uv: Vec4::new(1., 1., 0., 0.),
+            albedo_uv: Vec4::new(1., 1., 0., 0.),
+            emission_uv: Vec4::new(1., 1., 0., 0.),
+            height_strength: 1.,
+            emission_power: 1.,
+            tint: Vec4::ONE,
+            ..Default::default()
+        })
+    });
     register_reflect_modifier::<TerrainParticleModifier>(registry, |_| {
         Box::new(TerrainParticleModifier::default())
     });
@@ -458,6 +471,113 @@ pub struct SurfaceLightingModifier {
 }
 
 pub const SCENE_LIGHT_SLOT: &str = "scene_light";
+
+/// Two scrolling source height maps drive the cutout and view-dependent UV offset.
+#[derive(Clone, Copy, Debug, Default, Reflect, Serialize, Deserialize)]
+pub struct SolidParallaxModifier {
+    pub light_slot: u32,
+    pub ramp_slot: u32,
+    pub height1_slot: u32,
+    pub height2_slot: u32,
+    pub albedo_slot: u32,
+    pub emission_slot: u32,
+    pub height1_uv: Vec4,
+    pub height2_uv: Vec4,
+    pub albedo_uv: Vec4,
+    pub emission_uv: Vec4,
+    pub scroll: Vec4,
+    pub tint: Vec4,
+    pub height_strength: f32,
+    pub height_bias: f32,
+    pub parallax: f32,
+    pub emission_power: f32,
+}
+
+impl Modifier for SolidParallaxModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Solid Parallax uses the fragment stage.",
+        ))
+    }
+}
+
+impl RenderModifier for SolidParallaxModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_normal();
+        context.set_needs_uv();
+        let mut code = String::from("{\n");
+        fragment_world_position(&mut code);
+        let sample = |slot, st: Vec4, offset: &str| {
+            format!("textureSample(material_texture_{slot}, material_sampler_{slot}, uv * {} + {} + {offset})",
+                vec2(Vec2::new(st.x, st.y)), vec2(Vec2::new(st.z, st.w)))
+        };
+        let scroll = self.scroll;
+        let scroll1 = format!("phase * {}", vec2(Vec2::new(scroll.x, -scroll.y)));
+        let scroll2 = format!("phase * {}", vec2(Vec2::new(scroll.z, -scroll.w)));
+        // shortcut: reconstruct tangent directions from the exported UVs until Hanabi supplies mesh tangents.
+        // shortcut: sample the current main light and ambient until the particle pass exposes Bevy light clusters.
+        code.push_str(&format!(r#"
+let world = world_h.xyz / world_h.w;
+let n = normalize(normal);
+let v = normalize(view.world_position - world);
+let x = dpdx(world);
+let y = dpdy(world);
+let ux = dpdx(uv);
+let uy = dpdy(uv);
+let handedness = sign(ux.x * uy.y - ux.y * uy.x);
+let t = (x * uy.y - y * ux.y) * handedness;
+let b = (y * ux.x - x * uy.x) * -handedness;
+let tangent_view = vec3<f32>(dot(v, t / max(length(t), 1e-7)), dot(v, b / max(length(b), 1e-7)), dot(v, n));
+let phase = sim_params.time / 20.0;
+let height = {height1}.r * {height2}.r * {strength:?} + {bias:?};
+let offset = (height - 0.5) * {parallax:?} * tangent_view.xy / (tangent_view.z + 0.42) * vec2<f32>(1.0, -1.0);
+let albedo = {albedo}.rgb * {tint};
+let emission = pow({emission}.rgb * {tint}, vec3<f32>({power:?}));
+if (height * color.a < 0.5) {{ discard; }}
+let world_light = textureLoad(material_texture_{light}, vec2<i32>(0, 0), 0);
+let direction = normalize(select(vec3<f32>(0.3, 0.7, 0.6), world_light.xyz, world_light.w > 1.5));
+let direct = select(vec3<f32>(0.85), textureLoad(material_texture_{light}, vec2<i32>(1, 0), 0).rgb * (10000.0 / 12000.0), world_light.w > 1.5);
+let ambient = select(vec3<f32>(0.15), textureLoad(material_texture_{light}, vec2<i32>(2, 0), 0).rgb, world_light.w > 1.5);
+let ramp = textureSampleLevel(material_texture_{ramp}, material_sampler_{ramp}, vec2<f32>(dot(n, direction), 0.0), 0.0).rgb * 2.0;
+color = vec4<f32>(albedo * (ambient + direct * ramp) + emission, 1.0);
+}}
+"#,
+            height1 = sample(self.height1_slot, self.height1_uv, &scroll1),
+            height2 = sample(self.height2_slot, self.height2_uv, &scroll2),
+            strength = self.height_strength,
+            bias = self.height_bias,
+            parallax = self.parallax,
+            albedo = sample(self.albedo_slot, self.albedo_uv, "offset"),
+            emission = sample(self.emission_slot, self.emission_uv, "offset"),
+            tint = self.tint.truncate().to_wgsl_string(),
+            power = self.emission_power,
+            light = self.light_slot,
+            ramp = self.ramp_slot,
+        ));
+        context.fragment_code.push_str(&code);
+        Ok(())
+    }
+}
 
 /// Three projected terrain layers with the source height blend.
 #[derive(Clone, Copy, Debug, Default, Reflect, Serialize, Deserialize)]

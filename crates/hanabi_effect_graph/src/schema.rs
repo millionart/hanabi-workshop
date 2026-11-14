@@ -245,6 +245,7 @@ fn is_texture_field(modifier_path: &str, field_name: &str) -> bool {
                 | "ParticleSnapshotModifier"
                 | "DamageNumberModifier"
                 | "SurfaceLightingModifier"
+                | "SolidParallaxModifier"
                 | "TerrainParticleModifier"
                 | "SnowToppedParticleModifier"
                 | "LegacyParticleModifier"
