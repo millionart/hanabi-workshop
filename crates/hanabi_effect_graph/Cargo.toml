@@ -13,6 +13,7 @@ keywords = ["bevy", "hanabi", "particles", "vfx", "graph"]
 categories = ["game-development", "graphics"]
 include = [
     "/src/**/*.rs",
+    "/src/**/*.wesl",
     "/examples/**/*.rs",
     "/tests/**/*.rs",
     "/tests/fixtures/**/*",

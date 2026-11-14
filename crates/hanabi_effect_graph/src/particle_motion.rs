@@ -21,6 +21,8 @@ pub struct VelocityOverLifetimeModifier {
     pub world_space: bool,
     pub local_particles: bool,
     pub orbital: bool,
+    #[serde(default)]
+    pub noise: bool,
 }
 
 /// Apply world-space acceleration in either particle simulation space.
@@ -33,6 +35,7 @@ pub struct WorldAccelerationModifier {
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
     registry.write().register::<WorldAccelerationModifier>();
+    registry.write().register::<CurlNoiseModifier>();
     register_reflect_modifier::<VelocityOverLifetimeModifier>(registry, |module| {
         let zero = module.lit(Vec3::ZERO);
         let radial = module.lit(0_f32);
@@ -46,12 +49,35 @@ pub fn register(registry: &AppTypeRegistry) {
             world_space: false,
             local_particles: true,
             orbital: false,
+            noise: false,
         })
     });
     register_reflect_modifier::<WorldAccelerationModifier>(registry, |module| {
         Box::new(WorldAccelerationModifier {
             acceleration: module.lit(Vec3::Y),
             local_particles: true,
+        })
+    });
+    register_reflect_modifier::<CurlNoiseModifier>(registry, |module| {
+        let vector = module.lit(Vec3::ONE);
+        let zero = module.lit(0_f32);
+        Box::new(CurlNoiseModifier {
+            strength: vector,
+            seed_offset: module.lit(Vec3::ZERO),
+            position_amount: module.lit(1_f32),
+            rotation_amount: zero,
+            size_amount: zero,
+            scroll_speed: zero,
+            frequency: 0.5,
+            quality: 1,
+            octaves: 1,
+            octave_multiplier: 0.5,
+            octave_scale: 2.,
+            damping: true,
+            local_particles: true,
+            separate_size_axes: false,
+            velocity_addition: false,
+            size_from_lifetime: false,
         })
     });
 }
@@ -87,7 +113,11 @@ impl Modifier for VelocityOverLifetimeModifier {
         ModifierContext::Update
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY])
+        if self.noise {
+            Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY, Attribute::F32X3_1])
+        } else {
+            Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY])
+        }
     }
     fn boxed_clone(&self) -> BoxedModifier {
         Box::new(*self)
@@ -119,6 +149,9 @@ impl Modifier for VelocityOverLifetimeModifier {
             }
         };
         code.push_str(&format!("var motion = particle.velocity + {linear};\n"));
+        if self.noise {
+            code.push_str("motion += particle.f32x3_1;\n");
+        }
         if self.orbital {
             let angular = context.eval(module, self.angular)?;
             let offset = context.eval(module, self.offset)?;
@@ -148,6 +181,93 @@ impl Modifier for VelocityOverLifetimeModifier {
         }
         code.push_str("particle.position += motion * dt;\n}\n");
         context.main_code.push_str(&code);
+        Ok(())
+    }
+}
+
+/// Source curl noise changes this step's motion, roll and size.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct CurlNoiseModifier {
+    pub strength: ExprHandle,
+    pub seed_offset: ExprHandle,
+    pub position_amount: ExprHandle,
+    pub rotation_amount: ExprHandle,
+    pub size_amount: ExprHandle,
+    pub scroll_speed: ExprHandle,
+    pub frequency: f32,
+    pub quality: u32,
+    pub octaves: u32,
+    pub octave_multiplier: f32,
+    pub octave_scale: f32,
+    pub damping: bool,
+    pub local_particles: bool,
+    pub separate_size_axes: bool,
+    pub velocity_addition: bool,
+    #[serde(default)]
+    pub size_from_lifetime: bool,
+}
+
+impl Modifier for CurlNoiseModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        let mut attributes = vec![
+            Attribute::POSITION,
+            Attribute::SIZE3,
+            Attribute::F32_0,
+            Attribute::F32X3_0,
+        ];
+        if self.velocity_addition {
+            attributes.push(Attribute::F32X3_1);
+        }
+        Cow::Owned(attributes)
+    }
+
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        let strength = context.eval(module, self.strength)?;
+        let seed_offset = context.eval(module, self.seed_offset)?;
+        let position = context.eval(module, self.position_amount)?;
+        let rotation = context.eval(module, self.rotation_amount)?;
+        let size = context.eval(module, self.size_amount)?;
+        let scroll = context.eval(module, self.scroll_speed)?;
+        let frequency = self.frequency.max(1e-6);
+        let scale = if self.damping { frequency.recip() } else { 1. };
+        if !context.extra_code.contains("fn unity_curl(") {
+            context
+                .extra_code
+                .push_str(include_str!("particle_noise.wesl"));
+        }
+        let motion = if self.local_particles {
+            format!("curl * ({position}) * vec3<f32>(1.0, 1.0, -1.0)")
+        } else {
+            format!(
+                "(unpack_compressed_transform((*spawner).inverse_transform) * vec4<f32>(curl * ({position}) * vec3<f32>(1.0, 1.0, -1.0), 0.0)).xyz"
+            )
+        };
+        let use_motion = if self.velocity_addition {
+            format!("particle.f32x3_1 = {motion};")
+        } else {
+            format!("particle.position += ({motion}) * sim_params.delta_time;")
+        };
+        let size_value = if self.separate_size_axes {
+            "scale_factor"
+        } else {
+            "vec3<f32>(scale_factor.x)"
+        };
+        context.main_code.push_str(&format!(
+            "\n{{\nlet p = particle.position * vec3<f32>(1.0, 1.0, -1.0) + ({seed_offset}) * 100.0;\n\
+             let curl = unity_curl(p, sim_params.time * ({scroll}), {frequency:?}, {}u, {}u, {:?}, {:?}) * ({strength}) * {scale:?};\n\
+             {use_motion}\nparticle.f32_0 += curl.z * ({rotation}) * (0.008726646 * sim_params.delta_time);\n\
+             let scale_factor = max(vec3<f32>(0.0), vec3<f32>(1.0) + curl * (0.5 * ({size})));\n\
+             particle.size3 {} {size_value};\n}}\n",
+            self.quality, self.octaves, self.octave_multiplier, self.octave_scale, if self.size_from_lifetime { "*=" } else { "= particle.f32x3_0 *" },
+        ));
         Ok(())
     }
 }
