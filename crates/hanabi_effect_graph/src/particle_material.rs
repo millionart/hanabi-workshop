@@ -522,6 +522,14 @@ impl Modifier for SolidParallaxModifier {
 }
 
 impl RenderModifier for SolidParallaxModifier {
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
+
     fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
         context.set_needs_normal();
         context.set_needs_uv();
