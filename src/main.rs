@@ -264,6 +264,10 @@ impl Roundtrip<'_, '_> {
         }
         let graph = content.effect_graph();
         use hanabi_effect_graph::model::{EditValue, ModifierNodeData};
+        let has_timed_sub_emitter = graph.emitters.iter().flat_map(|emitter| &emitter.nodes).any(|node| {
+            matches!(&node.payload, NodePayload::Modifier(ModifierNodeData::Known { type_path, .. })
+                if type_path.ends_with("::TimedSubEmitterModifier"))
+        });
         let effect_config = graph.emitters.iter().find_map(|emitter| {
             emitter.nodes.iter().find_map(|node| {
                 let NodePayload::Modifier(ModifierNodeData::Known { type_path, config }) =
@@ -288,7 +292,8 @@ impl Roundtrip<'_, '_> {
                         ),
                         _ => return None,
                     }
-                } else if type_path.ends_with("::ParticleLightsModifier") {
+                } else if !has_timed_sub_emitter && type_path.ends_with("::ParticleLightsModifier")
+                {
                     match config.get("intensity") {
                         Some(EditValue::Scalar(Value::Scalar(
                             bevy_hanabi::ScalarValue::Float(value),

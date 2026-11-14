@@ -32,6 +32,14 @@ pub struct WorldAccelerationModifier {
     pub local_particles: bool,
 }
 
+/// Apply particle drag using the current cross section and speed.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct ParticleDragModifier {
+    pub drag: ExprHandle,
+    pub multiply_by_size: bool,
+    pub multiply_by_speed: bool,
+}
+
 /// Emit a GPU event on birth (0), trail spacing (1) or death (2).
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct ParticleSpawnEventModifier {
@@ -196,6 +204,7 @@ pub const PARTICLE_STATE_FIELDS: u32 = 7;
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
     registry.write().register::<WorldAccelerationModifier>();
+    registry.write().register::<ParticleDragModifier>();
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
     registry.write().register::<TimedSubEmitterModifier>();
@@ -272,6 +281,13 @@ pub fn register(registry: &AppTypeRegistry) {
             distance: 0.1,
             probability: 1.,
             suppress_snapshot: false,
+        })
+    });
+    register_reflect_modifier::<ParticleDragModifier>(registry, |module| {
+        Box::new(ParticleDragModifier {
+            drag: module.lit(0.05_f32),
+            multiply_by_size: true,
+            multiply_by_speed: true,
         })
     });
     register_reflect_modifier::<TimedSubEmitterModifier>(registry, |_| {
@@ -823,6 +839,45 @@ impl Modifier for WorldAccelerationModifier {
         let delta = simulation_delta(context);
         context.main_code.push_str(&format!(
             "\nparticle.velocity += ({acceleration}) * {delta};\n"
+        ));
+        Ok(())
+    }
+}
+
+impl Modifier for ParticleDragModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::VELOCITY, Attribute::SIZE3])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        let drag = context.eval(module, self.drag)?;
+        let dt = simulation_delta(context);
+        let area = if self.multiply_by_size {
+            "3.1415927 * radius * radius"
+        } else {
+            "1.0"
+        };
+        let speed_factor = if self.multiply_by_speed {
+            "dot(particle.velocity, particle.velocity)"
+        } else {
+            "1.0"
+        };
+        context.main_code.push_str(&format!(
+            r#"
+{{
+    let speed = length(particle.velocity);
+    if (speed > 1e-15) {{
+        let radius = 0.5 * max(particle.size3.x, max(particle.size3.y, particle.size3.z));
+        let loss = {area} * max({drag}, 0.0) * {speed_factor} * {dt};
+        particle.velocity = (particle.velocity / speed) * max(speed - loss, 0.0);
+    }}
+}}
+"#
         ));
         Ok(())
     }
