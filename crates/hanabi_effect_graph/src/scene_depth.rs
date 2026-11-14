@@ -23,7 +23,7 @@ use bevy::{
         texture::GpuImage,
         view::ViewDepthStencilTexture,
     },
-    shader::Shader,
+    shader::{Shader, ShaderDefVal},
 };
 
 pub const SCENE_DEPTH_SLOT: &str = "scene_depth";
