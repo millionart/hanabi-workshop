@@ -94,9 +94,12 @@ pub struct IntegrateMotionModifier;
 pub struct ParticleSnapshotModifier {
     pub particle_state_slot: u32,
     pub use_snapshot: ExprHandle,
+    #[serde(default)]
+    pub flipbook_random: bool,
 }
 
 pub const PARTICLE_STATE_SLOT: &str = "particle_state";
+pub const PARTICLE_STATE_FIELDS: u32 = 7;
 
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
@@ -205,6 +208,7 @@ pub fn register(registry: &AppTypeRegistry) {
         Box::new(ParticleSnapshotModifier {
             particle_state_slot: 0,
             use_snapshot: module.lit(0_u32),
+            flipbook_random: false,
         })
     });
 }
@@ -214,7 +218,7 @@ impl Modifier for ParticleSnapshotModifier {
         ModifierContext::Update
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        Cow::Borrowed(&[
+        const ATTRIBUTES: &[Attribute] = &[
             Attribute::AGE,
             Attribute::LIFETIME,
             Attribute::POSITION,
@@ -227,7 +231,14 @@ impl Modifier for ParticleSnapshotModifier {
             Attribute::F32_7,
             Attribute::F32X3_2,
             Attribute::HDR_COLOR,
-        ])
+            Attribute::F32_3,
+            Attribute::F32_4,
+        ];
+        Cow::Borrowed(if self.flipbook_random {
+            ATTRIBUTES
+        } else {
+            &ATTRIBUTES[..ATTRIBUTES.len() - 2]
+        })
     }
     fn boxed_clone(&self) -> BoxedModifier {
         Box::new(*self)
@@ -235,12 +246,22 @@ impl Modifier for ParticleSnapshotModifier {
     fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
         let active = context.eval(module, self.use_snapshot)?;
         if !context.extra_code.contains("fn source_state_component(") {
+            context.extra_code.push_str(&format!(
+                "\nconst SNAPSHOT_FIELDS: u32 = {PARTICLE_STATE_FIELDS}u;\n"
+            ));
             context
                 .extra_code
                 .push_str(include_str!("particle_snapshot.wesl"));
         }
         let texture = format!("material_texture_{}", self.particle_state_slot);
-        context.main_code.push_str(&format!("\nif (({active}) != 0u) {{\nlet slot = particle_index;\nlet posed = source_state_component({texture}, slot, 0u);\nlet age = posed.w;\nis_alive = true;\nparticle.f32_7 = select(-1.0, 1.0, age >= 0.0);\nparticle.position = posed.xyz;\nparticle.age = max(age, 0.0);\nlet movement = source_state_component({texture}, slot, 1u);\nparticle.velocity = movement.xyz;\nparticle.lifetime = movement.w;\nlet extent = source_state_component({texture}, slot, 2u);\nparticle.size3 = extent.xyz;\nparticle.f32_0 = extent.w;\nlet angle = source_state_component({texture}, slot, 3u);\nparticle.f32x2_0 = angle.xy;\nparticle.f32x2_1 = angle.zw;\nlet extras = source_state_component({texture}, slot, 4u);\nparticle.f32x3_2 = vec3<f32>(extras.xyz);\nparticle.f32_6 = extras.w;\nparticle.hdr_color = source_state_component({texture}, slot, 5u);\n}}\n"));
+        let random = if self.flipbook_random {
+            format!(
+                "let frame = source_state_component({texture}, slot, 6u);\nparticle.f32_3 = frame.x;\nparticle.f32_4 = frame.y;\n"
+            )
+        } else {
+            String::new()
+        };
+        context.main_code.push_str(&format!("\nif (({active}) != 0u) {{\nlet slot = particle_index;\nlet posed = source_state_component({texture}, slot, 0u);\nlet age = posed.w;\nis_alive = true;\nparticle.f32_7 = select(-1.0, 1.0, age >= 0.0);\nparticle.position = posed.xyz;\nparticle.age = max(age, 0.0);\nlet movement = source_state_component({texture}, slot, 1u);\nparticle.velocity = movement.xyz;\nparticle.lifetime = movement.w;\nlet extent = source_state_component({texture}, slot, 2u);\nparticle.size3 = extent.xyz;\nparticle.f32_0 = extent.w;\nlet angle = source_state_component({texture}, slot, 3u);\nparticle.f32x2_0 = angle.xy;\nparticle.f32x2_1 = angle.zw;\nlet extras = source_state_component({texture}, slot, 4u);\nparticle.f32x3_2 = vec3<f32>(extras.xyz);\nparticle.f32_6 = extras.w;\nparticle.hdr_color = source_state_component({texture}, slot, 5u);\n{random}}}\n"));
         Ok(())
     }
 }
