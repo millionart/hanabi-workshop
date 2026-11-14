@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use bevy::{
-    math::{Vec3, Vec4},
-    prelude::{AppTypeRegistry, Reflect},
+    math::{Vec2, Vec3, Vec4},
+    prelude::{AppTypeRegistry, Reflect, Transform},
 };
 use bevy_hanabi::{
     Attribute, BoxedModifier, EvalContext, ExprError, ExprHandle, Modifier, ModifierContext,
@@ -38,6 +38,69 @@ pub struct ParticleDragModifier {
     pub drag: ExprHandle,
     pub multiply_by_size: bool,
     pub multiply_by_speed: bool,
+}
+
+/// An unbounded spherical attractor with orbital acceleration and absolute drag.
+#[derive(Clone, Copy, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+pub struct SphereForceFieldModifier {
+    pub preview_center: Vec3,
+    pub center_offset: Vec3,
+    pub gravity: f32,
+    pub orbit_speed: f32,
+    pub orbit_attraction: f32,
+    pub rotation_randomness: Vec2,
+    pub drag: f32,
+}
+
+impl SphereForceFieldModifier {
+    pub fn from_effect(asset: &bevy_hanabi::EffectAsset) -> Option<&Self> {
+        asset.update_modifiers().find_map(|modifier| modifier.as_reflect().downcast_ref::<Self>())
+    }
+
+    /// Apply the baked modifier to a CPU particle whose position is consumed by a ribbon.
+    pub fn velocity(&self, field: Transform, position: Vec3, mut velocity: Vec3, seed: u32, dt: f32) -> Vec3 {
+        let relative = position - field.transform_point(self.center_offset);
+        velocity -= relative.normalize_or_zero() * (self.gravity * 30. * dt);
+        if self.orbit_speed != 0. && self.orbit_attraction != 0. {
+            let angles = Vec2::new(
+                random_from_particle_seed(seed.wrapping_add(0xeef6_27ab)) - 0.5,
+                random_from_particle_seed(seed.wrapping_add(0x8937_5938)) - 0.5,
+            ) * self.rotation_randomness * std::f32::consts::TAU;
+            let (sin_x, cos_x) = angles.x.sin_cos();
+            let (sin_z, cos_z) = angles.y.sin_cos();
+            // The source field axis is reflected across Z, including the cross product.
+            let axis = field.rotation * Vec3::new(cos_x * sin_z, cos_x * cos_z, sin_x);
+            let target = relative.cross(axis).normalize_or_zero() * self.orbit_speed;
+            velocity += (target - velocity) * (self.orbit_attraction * 30. * dt);
+        }
+        velocity * (1. - self.drag * dt / velocity.length().max(1e-12)).max(0.)
+    }
+}
+
+fn random_from_particle_seed(seed: u32) -> f32 {
+    let w = seed.wrapping_mul(0x6ab5_1b9d).wrapping_add(0x714a_cb3f);
+    let t = seed ^ (seed << 11);
+    ((w ^ (w >> 19) ^ t ^ (t >> 8)) & 0x7f_ffff) as f32 * f32::from_bits(0x3400_0001)
+}
+
+#[cfg(test)]
+#[test]
+fn sphere_force_field_matches_native_acceleration_and_drag() {
+    let field = SphereForceFieldModifier {
+        preview_center: Vec3::ZERO,
+        center_offset: Vec3::ZERO,
+        gravity: 50.,
+        orbit_speed: 45.,
+        orbit_attraction: 0.1,
+        rotation_randomness: Vec2::splat(0.005),
+        drag: 0.02,
+    };
+    // UnityPlayer ApplyForceField<0>, then reflected across Z into Bevy coordinates.
+    let pose = Transform::from_xyz(2., 4., 5.);
+    let actual = field.velocity(pose, Vec3::X * 5., Vec3::ZERO, 0, 0.1);
+    assert!(actual.abs_diff_eq(Vec3::new(-33.02207, 59.25370, 81.27343), 0.00004));
+    let drag = SphereForceFieldModifier { gravity: 0., orbit_speed: 0., ..field };
+    assert_eq!(drag.velocity(pose, Vec3::ZERO, Vec3::X * 0.001, 0, 0.1), Vec3::ZERO);
 }
 
 /// Emit a GPU event on birth (0), trail spacing (1) or death (2).
@@ -229,6 +292,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
     registry.write().register::<WorldAccelerationModifier>();
     registry.write().register::<ParticleDragModifier>();
+    registry.write().register::<SphereForceFieldModifier>();
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
     registry.write().register::<TimedSubEmitterModifier>();
@@ -313,6 +377,17 @@ pub fn register(registry: &AppTypeRegistry) {
             drag: module.lit(0.05_f32),
             multiply_by_size: true,
             multiply_by_speed: true,
+        })
+    });
+    register_reflect_modifier::<SphereForceFieldModifier>(registry, |_| {
+        Box::new(SphereForceFieldModifier {
+            preview_center: Vec3::ZERO,
+            center_offset: Vec3::ZERO,
+            gravity: 50.,
+            orbit_speed: 45.,
+            orbit_attraction: 0.1,
+            rotation_randomness: Vec2::ZERO,
+            drag: 0.02,
         })
     });
     register_reflect_modifier::<TimedSubEmitterModifier>(registry, |_| {
@@ -650,6 +725,20 @@ fn simulation_delta(context: &ShaderWriter) -> &'static str {
     }
 }
 
+fn include_particle_random(context: &mut ShaderWriter) {
+    if !context.extra_code.contains("fn source_particle_random(") {
+        // UnityPlayer's first draw from the particle seed plus the caller's salt.
+        context.extra_code.push_str(r#"
+fn source_particle_random(x: u32) -> f32 {
+    let w = x * 0x6ab51b9du + 0x714acb3fu;
+    let t = x ^ (x << 11u);
+    let value = w ^ (w >> 19u) ^ t ^ (t >> 8u);
+    return f32(value & 0x7fffffu) * bitcast<f32>(0x34000001u);
+}
+"#);
+    }
+}
+
 impl Modifier for EmissionShapeModifier {
     fn context(&self) -> ModifierContext {
         ModifierContext::Init
@@ -808,19 +897,7 @@ impl Modifier for TimedSubEmitterModifier {
     }
     fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
         context.set_emits_gpu_spawn_events(true)?;
-        if !context.extra_code.contains("fn sub_emitter_random(") {
-            // UnityPlayer's first draw from the particle seed plus the caller's salt.
-            context.extra_code.push_str(
-                r#"
-fn sub_emitter_random(x: u32) -> f32 {
-    let w = x * 0x6ab51b9du + 0x714acb3fu;
-    let t = x ^ (x << 11u);
-    let value = w ^ (w >> 19u) ^ t ^ (t >> 8u);
-    return f32(value & 0x7fffffu) * bitcast<f32>(0x34000001u);
-}
-"#,
-            );
-        }
+        include_particle_random(context);
         let dt = simulation_delta(context);
         let duration = if self.looping {
             "particle.lifetime".into()
@@ -867,8 +944,8 @@ if (particle.f32_7 != 0.0) {
 {start}
 if ({active} && {dt} > 0.0 && {probability:?} > 0.0) {{
     let parent_seed = pcg_hash(particle.u32_1 ^ (*spawner).seed);
-    if (sub_emitter_random(parent_seed + 0x5aa47f98u) <= {probability:?}) {{
-        let delay = mix({delay_min:?}, {delay_max:?}, sub_emitter_random(parent_seed + 0x34bfa39au));
+    if (source_particle_random(parent_seed + 0x5aa47f98u) <= {probability:?}) {{
+        let delay = mix({delay_min:?}, {delay_max:?}, source_particle_random(parent_seed + 0x34bfa39au));
         let elapsed = min(particle.age, particle.lifetime) - delay;
         let previous = clamp(previous_age - delay, 0.0, {duration});
         let current = clamp(elapsed, previous, {duration});
@@ -967,6 +1044,47 @@ impl Modifier for WorldAccelerationModifier {
         context.main_code.push_str(&format!(
             "\nparticle.velocity += ({acceleration}) * {delta};\n"
         ));
+        Ok(())
+    }
+}
+
+impl Modifier for SphereForceFieldModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY, Attribute::U32_1])
+    }
+
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        include_particle_random(context);
+        let dt = simulation_delta(context);
+        let center = (self.preview_center + self.center_offset).to_wgsl_string();
+        let randomness = self.rotation_randomness.to_wgsl_string();
+        let Self { gravity, orbit_speed, orbit_attraction, drag, .. } = *self;
+        // shortcut: the editor uses Hanabi birth seeds. The game samples the original CPU particle seeds for ribbons.
+        context.main_code.push_str(&format!(r#"
+{{
+    let delta = {dt};
+    let relative = particle.position - {center};
+    particle.velocity -= relative / max(length(relative), 1e-12) * ({gravity:?} * 30.0 * delta);
+    if ({orbit_speed:?} != 0.0 && {orbit_attraction:?} != 0.0) {{
+        let birth_seed = pcg_hash(particle.u32_1 ^ (*spawner).seed);
+        let angles = (vec2<f32>(source_particle_random(birth_seed + 0xeef627abu),
+                               source_particle_random(birth_seed + 0x89375938u)) - 0.5) * {randomness} * tau;
+        let axis = vec3<f32>(cos(angles.x) * sin(angles.y), cos(angles.x) * cos(angles.y), sin(angles.x));
+        let tangent = cross(relative, axis);
+        let target = tangent / max(length(tangent), 1e-12) * {orbit_speed:?};
+        particle.velocity += (target - particle.velocity) * ({orbit_attraction:?} * 30.0 * delta);
+    }}
+    particle.velocity *= max(0.0, 1.0 - {drag:?} * delta / max(length(particle.velocity), 1e-12));
+}}
+"#));
         Ok(())
     }
 }

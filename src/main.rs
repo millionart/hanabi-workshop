@@ -284,6 +284,7 @@ impl Roundtrip<'_, '_> {
                         "CollisionSubEmitterModifier" => ("preview_floor", 0),
                         "SnowToppedParticleModifier" => ("depth", 0),
                         "SolidParallaxModifier" => ("parallax", 0),
+                        "SphereForceFieldModifier" => ("gravity", 0),
                         "TrailRendererModifier" => ("corner_vertices", 1),
                         "ParticleLightsModifier" => ("intensity", 1),
                         _ => return None,
