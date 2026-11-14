@@ -107,11 +107,15 @@ impl Default for CloudRemapModifier {
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<CloudRemapModifier>();
     registry.write().register::<BillboardGeometryModifier>();
+    registry.write().register::<ParticleDistortionModifier>();
     register_reflect_modifier::<CloudRemapModifier>(registry, |_| {
         Box::new(CloudRemapModifier::default())
     });
     register_reflect_modifier::<BillboardGeometryModifier>(registry, |_| {
         Box::new(BillboardGeometryModifier::default())
+    });
+    register_reflect_modifier::<ParticleDistortionModifier>(registry, |_| {
+        Box::new(ParticleDistortionModifier::default())
     });
 }
 
@@ -334,6 +338,109 @@ fn vec2(v: Vec2) -> String {
 
 fn fragment_world_position(code: &mut String) {
     code.push_str("let ndc_xy = ((in.position.xy - view.viewport.xy) / view.viewport.zw) * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);\nlet world_h = view.world_from_clip * vec4<f32>(ndc_xy, in.position.z, 1.0);\n");
+}
+
+/// Refract the current camera's opaque color using mask and normal textures.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct ParticleDistortionModifier {
+    pub scene_color_slot: u32,
+    pub scene_depth_slot: u32,
+    pub mask_slot: u32,
+    pub normal_slot: u32,
+    pub mask_uv: Vec4,
+    pub normal_uv: Vec4,
+    pub distance_fade: Vec4,
+    pub inverse_fade: f32,
+    pub magnitude: f32,
+    pub use_mask: bool,
+    pub use_normal: bool,
+}
+
+impl Default for ParticleDistortionModifier {
+    fn default() -> Self {
+        let uv = Vec4::new(1., 1., 0., 0.);
+        Self {
+            scene_color_slot: 0,
+            scene_depth_slot: 0,
+            mask_slot: 0,
+            normal_slot: 0,
+            mask_uv: uv,
+            normal_uv: uv,
+            distance_fade: Vec4::new(0., 5., 250000., 200000.),
+            inverse_fade: 0.,
+            magnitude: 1.,
+            use_mask: false,
+            use_normal: false,
+        }
+    }
+}
+
+impl Modifier for ParticleDistortionModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Distortion is a fragment modifier.",
+        ))
+    }
+}
+
+impl RenderModifier for ParticleDistortionModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_uv();
+        let [near_zero, near_one, far_zero, far_one] = self.distance_fade.to_array();
+        let mut code = format!(
+            "{{\nlet fragment_h = view.view_from_clip * vec4<f32>(0.0, 0.0, in.position.z, 1.0);\nlet fragment_depth = -fragment_h.z / fragment_h.w;\nvar fade = clamp(min((fragment_depth - {near_zero:?}) / max({near_one:?} - {near_zero:?}, 1e-6), ({far_zero:?} - fragment_depth) / max({far_zero:?} - {far_one:?}, 1e-6)), 0.0, 1.0);\n"
+        );
+        if self.inverse_fade > 0. {
+            code.push_str(&format!("let scene_sample = textureLoad(material_texture_{}, vec2<i32>(in.position.xy), 0);\nlet raw_depth = scene_sample.r + scene_sample.g / 2048.0;\nif (raw_depth > 0.0) {{\nlet scene_h = view.view_from_clip * vec4<f32>(0.0, 0.0, raw_depth, 1.0);\nlet scene_depth = -scene_h.z / scene_h.w;\nfade *= clamp((scene_depth - fragment_depth) * {:?}, 0.0, 1.0);\n}}\n", self.scene_depth_slot, self.inverse_fade));
+        }
+        let sample = |slot: u32, transform: Vec4| {
+            let coords = format!(
+                "(uv * {} + {})",
+                vec2(transform.truncate().truncate()),
+                vec2(Vec2::new(transform.z, transform.w))
+            );
+            format!("textureSample(material_texture_{slot}, material_sampler_{slot}, {coords})")
+        };
+        let mask = if self.use_mask {
+            format!("{}.a", sample(self.mask_slot, self.mask_uv))
+        } else {
+            "1.0".into()
+        };
+        let bump = if self.use_normal {
+            sample(self.normal_slot, self.normal_uv)
+        } else {
+            "vec4<f32>(0.5, 0.5, 1.0, 1.0)".into()
+        };
+        code.push_str(&format!("let alpha = {mask} * color.a * fade;\nif (alpha < 0.01) {{ discard; }}\nlet bump = {bump};\nlet normal = vec2<f32>(bump.r * bump.a, bump.g) * 2.0 - 1.0;\nif (sqrt(1.0 - min(dot(normal, normal), 1.0)) < 0.99) {{ discard; }}\nlet dims = vec2<f32>(textureDimensions(material_texture_{0}));\nlet screen = (in.position.xy + view.viewport.zw * (normal * {1:?} * alpha / fragment_depth)) / dims;\ncolor = vec4<f32>(textureSample(material_texture_{0}, material_sampler_{0}, screen).rgb, 1.0);\n}}\n", self.scene_color_slot, self.magnitude));
+        context.fragment_code.push_str(&code);
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
 }
 
 /// Preserve source billboard sizing, pivot and facing before expanding the mesh.

@@ -237,7 +237,10 @@ fn expr_port_kind(path: &str) -> Option<bool> {
 /// Hanabi exposes this as a static `u32` index, so this remains keyed by name.
 fn is_texture_field(modifier_path: &str, field_name: &str) -> bool {
     base_name(modifier_path) == "ParticleTextureModifier" && field_name == "texture_slot"
-        || base_name(modifier_path) == "CloudRemapModifier" && field_name.ends_with("_slot")
+        || matches!(
+            base_name(modifier_path),
+            "CloudRemapModifier" | "ParticleDistortionModifier"
+        ) && field_name.ends_with("_slot")
 }
 
 /// A single named bit of a bitflags config type.

@@ -9,6 +9,7 @@ use bevy::{
         prepass::ViewPrepassTextures,
         schedule::Core3d,
     },
+    image::ImageSampler,
     prelude::*,
     render::{
         RenderApp, RenderStartup,
@@ -21,12 +22,14 @@ use bevy::{
         },
         renderer::{RenderContext, ViewQuery},
         texture::GpuImage,
-        view::ViewDepthStencilTexture,
+        view::{ViewDepthStencilTexture, ViewTarget},
     },
     shader::{Shader, ShaderDefVal},
 };
+use bevy_hanabi::EffectMaterial;
 
 pub const SCENE_DEPTH_SLOT: &str = "scene_depth";
+pub const SCENE_COLOR_SLOT: &str = "scene_color";
 
 /// Add to 3D cameras that render effects using the `scene_depth` slot.
 #[derive(Component, Clone, Copy, ExtractComponent)]
@@ -37,6 +40,11 @@ pub struct SceneDepthCamera;
 #[derive(Resource, Clone, ExtractResource)]
 #[extract_app(RenderApp)]
 pub struct SceneDepth(pub Handle<Image>);
+
+/// An opaque-scene snapshot for screen-space distortion effects.
+#[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct SceneColor(pub Handle<Image>);
 
 pub struct SceneDepthPlugin;
 
@@ -52,19 +60,33 @@ impl Plugin for SceneDepthPlugin {
                 .after(main_opaque_pass_3d)
                 .before(main_transparent_pass_3d),
         );
-        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        let mut image = Image::new_uninit(
-            Extent3d::default(),
-            TextureDimension::D2,
-            TextureFormat::Rgba16Float,
-            RenderAssetUsages::default(),
+        render.add_systems(
+            Core3d,
+            copy_color
+                .in_set(Core3dSystems::MainPass)
+                .after(main_opaque_pass_3d)
+                .before(main_transparent_pass_3d),
         );
-        image.texture_descriptor.usage =
-            TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT;
-        let output = images.add(image);
-        app.insert_resource(SceneDepth(output))
+        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+        let [depth, color] = std::array::from_fn(|_| {
+            let mut image = Image::new_uninit(
+                Extent3d::default(),
+                TextureDimension::D2,
+                TextureFormat::Rgba16Float,
+                RenderAssetUsages::default(),
+            );
+            image.texture_descriptor.usage =
+                TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT;
+            image.sampler = ImageSampler::linear();
+            images.add(image)
+        });
+        app.insert_resource(SceneDepth(depth))
+            .insert_resource(SceneColor(color))
+            .init_resource::<SceneInputsInUse>()
             .add_plugins((
                 ExtractResourcePlugin::<SceneDepth>::default(),
+                ExtractResourcePlugin::<SceneColor>::default(),
+                ExtractResourcePlugin::<SceneInputsInUse>::default(),
                 ExtractComponentPlugin::<SceneDepthCamera>::default(),
             ))
             .add_systems(
@@ -73,7 +95,7 @@ impl Plugin for SceneDepthPlugin {
             )
             .add_systems(
                 PostUpdate,
-                resize_depth_image
+                resize_scene_images
                     .after(CameraUpdateSystems)
                     .before(AssetEventSystems),
             );
@@ -95,11 +117,23 @@ fn enable_depth_sampling(mut cameras: Query<&mut Camera3d, Added<SceneDepthCamer
     }
 }
 
-fn resize_depth_image(
+fn resize_scene_images(
     cameras: Query<&Camera, With<SceneDepthCamera>>,
     image: Res<SceneDepth>,
+    color: Res<SceneColor>,
+    materials: Query<&EffectMaterial>,
+    mut in_use: ResMut<SceneInputsInUse>,
     mut images: ResMut<Assets<Image>>,
 ) {
+    let mut used = SceneInputsInUse::default();
+    for material in &materials {
+        used.depth |= material.images.contains(&image.0);
+        used.color |= material.images.contains(&color.0);
+        if used.depth && used.color {
+            break;
+        }
+    }
+    in_use.set_if_neq(used);
     let mut size = Extent3d::default();
     for extent in cameras
         .iter()
@@ -109,12 +143,22 @@ fn resize_depth_image(
         size.width = size.width.max(extent.x);
         size.height = size.height.max(extent.y);
     }
-    if images
-        .get(&image.0)
-        .is_some_and(|image| image.texture_descriptor.size != size)
-    {
-        images.get_mut(&image.0).unwrap().resize(size);
+    for (handle, active) in [(&image.0, used.depth), (&color.0, used.color)] {
+        let size = if active { size } else { Extent3d::default() };
+        if images
+            .get(handle)
+            .is_some_and(|image| image.texture_descriptor.size != size)
+        {
+            images.get_mut(handle).unwrap().resize(size);
+        }
     }
+}
+
+#[derive(Default, Resource, Clone, Copy, PartialEq, ExtractResource)]
+#[extract_app(RenderApp)]
+struct SceneInputsInUse {
+    depth: bool,
+    color: bool,
 }
 
 #[derive(Resource)]
@@ -122,6 +166,9 @@ struct DepthShader(Handle<Shader>);
 
 #[derive(Resource)]
 struct DepthPipelines([(BindGroupLayoutDescriptor, CachedRenderPipelineId); 2]);
+
+#[derive(Resource)]
+struct ColorPipeline(BindGroupLayoutDescriptor, CachedRenderPipelineId);
 
 fn prepare(
     mut commands: Commands,
@@ -158,6 +205,30 @@ fn prepare(
         (layout, id)
     });
     commands.insert_resource(DepthPipelines(pipelines));
+    let layout = BindGroupLayoutDescriptor::new(
+        "hanabi_scene_color",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (texture_2d(TextureSampleType::Float { filterable: false }),),
+        ),
+    );
+    let id = cache.queue_render_pipeline(RenderPipelineDescriptor {
+        label: Some("hanabi_scene_color".into()),
+        layout: vec![layout.clone()],
+        vertex: fullscreen.to_vertex_state(),
+        fragment: Some(FragmentState {
+            shader: shader.0.clone(),
+            shader_defs: vec![ShaderDefVal::Bool("COPY_COLOR".into(), true)],
+            targets: vec![Some(ColorTargetState {
+                format: TextureFormat::Rgba16Float,
+                blend: None,
+                write_mask: ColorWrites::ALL,
+            })],
+            ..default()
+        }),
+        ..default()
+    });
+    commands.insert_resource(ColorPipeline(layout, id));
 }
 
 fn copy_depth(
@@ -173,8 +244,12 @@ fn copy_depth(
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
     target: Res<SceneDepth>,
+    in_use: Res<SceneInputsInUse>,
     mut context: RenderContext,
 ) {
+    if !in_use.depth {
+        return;
+    }
     let (main_depth, prepass, msaa) = view.into_inner();
     let depth = prepass
         .and_then(|prepass| prepass.depth.as_ref())
@@ -186,24 +261,70 @@ fn copy_depth(
         return;
     };
     let size = depth.texture.texture.size();
+    let (layout, id) = &pipeline.0[usize::from(*msaa != Msaa::Off)];
+    let Some(pipeline) = cache.get_render_pipeline(*id) else {
+        return;
+    };
+    copy_view(
+        &mut context,
+        &cache.get_bind_group_layout(layout),
+        pipeline,
+        depth_view,
+        image,
+        size,
+    );
+}
+
+fn copy_color(
+    view: ViewQuery<&ViewTarget, With<SceneDepthCamera>>,
+    pipeline: Res<ColorPipeline>,
+    cache: Res<PipelineCache>,
+    images: Res<RenderAssets<GpuImage>>,
+    target: Res<SceneColor>,
+    in_use: Res<SceneInputsInUse>,
+    mut context: RenderContext,
+) {
+    if !in_use.color {
+        return;
+    }
+    let view = view.into_inner();
+    let (Some(image), Some(render_pipeline)) =
+        (images.get(&target.0), cache.get_render_pipeline(pipeline.1))
+    else {
+        return;
+    };
+    copy_view(
+        &mut context,
+        &cache.get_bind_group_layout(&pipeline.0),
+        render_pipeline,
+        view.main_texture_view(),
+        image,
+        view.main_texture().size(),
+    );
+}
+
+fn copy_view(
+    context: &mut RenderContext,
+    layout: &BindGroupLayout,
+    pipeline: &RenderPipeline,
+    source: &TextureView,
+    image: &GpuImage,
+    size: Extent3d,
+) {
     if size.width > image.texture_descriptor.size.width
         || size.height > image.texture_descriptor.size.height
     {
         return;
     }
-    let (layout, id) = &pipeline.0[usize::from(*msaa != Msaa::Off)];
-    let Some(pipeline) = cache.get_render_pipeline(*id) else {
-        return;
-    };
     let group = context.render_device().create_bind_group(
-        "hanabi_scene_depth",
-        &cache.get_bind_group_layout(layout),
-        &BindGroupEntries::single(depth_view),
+        "hanabi_scene_input",
+        layout,
+        &BindGroupEntries::single(source),
     );
     let mut pass = context
         .command_encoder()
         .begin_render_pass(&RenderPassDescriptor {
-            label: Some("hanabi_scene_depth"),
+            label: Some("hanabi_scene_input"),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: &image.texture_view,
                 depth_slice: None,

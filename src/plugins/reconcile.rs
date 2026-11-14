@@ -20,7 +20,9 @@ use bevy::{
 use bevy_egui::{EguiTextureHandle, EguiUserTextures};
 use bevy_hanabi::{EffectAsset, EffectMaterial, EffectSpawner, SlotDimension};
 use hanabi_effect_graph::model::EmitterId;
-use hanabi_effect_graph::scene_depth::{SCENE_DEPTH_SLOT, SceneDepth, SceneDepthCamera};
+use hanabi_effect_graph::scene_depth::{
+    SCENE_COLOR_SLOT, SCENE_DEPTH_SLOT, SceneColor, SceneDepth, SceneDepthCamera,
+};
 
 use crate::{
     document::{
@@ -44,11 +46,13 @@ pub struct TexturePlaceholder {
     d2: Handle<Image>,
     d3: Handle<Image>,
     scene_depth: Handle<Image>,
+    scene_color: Handle<Image>,
 }
 
 impl FromWorld for TexturePlaceholder {
     fn from_world(world: &mut World) -> Self {
         let scene_depth = world.resource::<SceneDepth>().0.clone();
+        let scene_color = world.resource::<SceneColor>().0.clone();
         let mut images = world.resource_mut::<Assets<Image>>();
         let mut placeholder = |dimension| {
             images.add(Image::new_fill(
@@ -68,6 +72,7 @@ impl FromWorld for TexturePlaceholder {
             d2: placeholder(TextureDimension::D2),
             d3: placeholder(TextureDimension::D3),
             scene_depth,
+            scene_color,
         }
     }
 }
@@ -85,6 +90,9 @@ impl TexturePlaceholder {
                 .load(path.clone()),
             PlannedImage::Runtime(name) if name.as_ref() == SCENE_DEPTH_SLOT => {
                 self.scene_depth.clone()
+            }
+            PlannedImage::Runtime(name) if name.as_ref() == SCENE_COLOR_SLOT => {
+                self.scene_color.clone()
             }
             PlannedImage::Runtime(_) | PlannedImage::Unbound => {
                 self.for_slot_dimension(planned.dimension)
