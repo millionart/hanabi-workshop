@@ -157,34 +157,30 @@ struct Roundtrip<'w, 's> {
     edits: MessageWriter<'w, edits::EditRequest>,
     files: MessageWriter<'w, app_commands::AppCommand>,
     exits: MessageWriter<'w, AppExit>,
-    edited: Local<'s, Option<RoundtripValue>>,
+    edited: Local<'s, Option<edits::EditKind>>,
     saving: Local<'s, bool>,
     started: Local<'s, bool>,
 }
 
-struct RoundtripValue {
-    emitter: hanabi_effect_graph::model::EmitterId,
-    node: hanabi_effect_graph::model::NodeId,
-    port: Option<hanabi_effect_graph::model::SharedStr>,
-    value: bevy_hanabi::Value,
-}
-
-impl RoundtripValue {
-    fn matches(&self, graph: &hanabi_effect_graph::model::EffectGraph) -> bool {
-        use hanabi_effect_graph::model::{ExprNode, NodePayload};
-        let Some(node) = graph
-            .emitter(self.emitter)
-            .and_then(|emitter| emitter.node(self.node))
-        else {
-            return false;
-        };
-        if let Some(port) = &self.port {
-            node.inputs
-                .iter()
-                .any(|input| &input.name == port && input.default.as_value() == Some(self.value))
-        } else {
-            node.payload == NodePayload::Expr(ExprNode::Literal(self.value))
-        }
+fn verify_roundtrip_edit(
+    graph: &hanabi_effect_graph::model::EffectGraph,
+    edit: &edits::EditKind,
+) -> bool {
+    use edits::EditKind;
+    use hanabi_effect_graph::model::{ExprNode, ModifierNodeData, NodePayload};
+    let node = |emitter, node| {
+        graph
+            .emitter(emitter)
+            .and_then(|emitter| emitter.node(node))
+    };
+    match edit {
+        EditKind::SetLiteralValue { emitter, node: id, new } => node(*emitter, *id)
+            .is_some_and(|node| node.payload == NodePayload::Expr(ExprNode::Literal(*new))),
+        EditKind::SetInputDefault { emitter, node: id, port, new } => node(*emitter, *id)
+            .is_some_and(|node| node.inputs.iter().any(|input| &input.name == port && input.default.as_value() == Some(*new))),
+        EditKind::SetModifierConfig { emitter, node: id, field, new } => node(*emitter, *id)
+            .is_some_and(|node| matches!(&node.payload, NodePayload::Modifier(ModifierNodeData::Known { config, .. }) if config.get(field) == Some(new))),
+        _ => unreachable!("Unsupported Workshop round-trip edit"),
     }
 }
 
@@ -210,7 +206,7 @@ impl Roundtrip<'_, '_> {
         );
         assert!(shaders.0.is_empty(), "{:?}", shaders.0);
         if let Some(edit) = self.edited.as_ref() {
-            if !edit.matches(content.effect_graph()) {
+            if !verify_roundtrip_edit(content.effect_graph(), edit) {
                 return;
             }
             if !*self.saving {
@@ -226,11 +222,10 @@ impl Roundtrip<'_, '_> {
             }
             let saved = hanabi_effect_graph::from_ron_bytes(&std::fs::read(path).unwrap()).unwrap();
             assert_eq!(&saved.graph, content.effect_graph());
-            assert!(edit.matches(&saved.graph));
+            assert!(verify_roundtrip_edit(&saved.graph, edit));
             info!(
-                "Workshop round trip passed: {} emitters; edited node {}, saved and read back",
+                "Workshop round trip passed: {} emitters; edited {edit:?}, saved and read back",
                 saved.graph.emitters.len(),
-                edit.node.get()
             );
             self.exits.write(AppExit::Success);
             return;
@@ -268,6 +263,33 @@ impl Roundtrip<'_, '_> {
             }
         }
         let graph = content.effect_graph();
+        use hanabi_effect_graph::model::{EditValue, ModifierNodeData};
+        let rounded_trail = graph.emitters.iter().find_map(|emitter| {
+            emitter.nodes.iter().find_map(|node| {
+                let NodePayload::Modifier(ModifierNodeData::Known { type_path, config }) =
+                    &node.payload
+                else {
+                    return None;
+                };
+                let Some(EditValue::U32(count)) = config.get("corner_vertices") else {
+                    return None;
+                };
+                (type_path.ends_with("::TrailRendererModifier") && *count > 0).then(|| {
+                    edits::EditKind::SetModifierConfig {
+                        emitter: emitter.id,
+                        node: node.id,
+                        field: "corner_vertices".into(),
+                        new: EditValue::U32(count.saturating_add(2)),
+                    }
+                })
+            })
+        });
+        if let Some(edit) = rounded_trail {
+            self.edits
+                .write(edits::EditRequest::new(entity, edit.clone()));
+            *self.edited = Some(edit);
+            return;
+        }
         let (emitter, node, port, old) = graph
             .emitters
             .iter()
@@ -313,12 +335,8 @@ impl Roundtrip<'_, '_> {
         } else {
             edits::EditKind::SetLiteralValue { emitter, node, new }
         };
-        self.edits.write(edits::EditRequest::new(entity, command));
-        *self.edited = Some(RoundtripValue {
-            emitter,
-            node,
-            port,
-            value: new,
-        });
+        self.edits
+            .write(edits::EditRequest::new(entity, command.clone()));
+        *self.edited = Some(command);
     }
 }
