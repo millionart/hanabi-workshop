@@ -915,6 +915,15 @@ impl<'a, 'm> ExprBaker<'a, 'm> {
             // A texture port resolves its image source (linked node or inline
             // binding) to the static slot index used by the modifier's WGSL.
             if matches!(field.role, FieldRole::Texture) {
+                if field.name.as_ref() == "shape_data_slot"
+                    && self.linked_source(node_id, &field.name).is_none()
+                    && matches!(
+                        self.inline_image(node_id, &field.name),
+                        None | Some(ImageBinding::Unbound)
+                    )
+                {
+                    continue;
+                }
                 let Some(slot) =
                     self.resolve_image_slot(node_id, &field.name, SlotDimension::D2, errors)
                 else {

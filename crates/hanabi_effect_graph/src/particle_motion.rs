@@ -65,6 +65,14 @@ pub struct EmissionShapeModifier {
     pub random_position: f32,
     pub spherical_direction: f32,
     pub align_to_direction: bool,
+    #[serde(default)]
+    pub shape_data_slot: u32,
+    #[serde(default)]
+    pub triangle_count: u32,
+    #[serde(default)]
+    pub mesh_placement: u32,
+    #[serde(default)]
+    pub use_mesh_colors: bool,
 }
 
 /// Establish this emitter's simulation step and compensate Hanabi's default age integration.
@@ -161,6 +169,10 @@ pub fn register(registry: &AppTypeRegistry) {
             random_position: 0.,
             spherical_direction: 0.,
             align_to_direction: false,
+            shape_data_slot: u32::MAX,
+            triangle_count: 0,
+            mesh_placement: 2,
+            use_mesh_colors: false,
         })
     });
     register_reflect_modifier::<SimulationStepModifier>(registry, |module| {
@@ -227,8 +239,13 @@ impl Modifier for EmissionShapeModifier {
         ModifierContext::Init
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        if self.align_to_direction {
-            Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY, Attribute::F32X2_0])
+        if self.align_to_direction || self.use_mesh_colors {
+            Cow::Borrowed(&[
+                Attribute::POSITION,
+                Attribute::VELOCITY,
+                Attribute::F32X2_0,
+                Attribute::HDR_COLOR,
+            ])
         } else {
             Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY])
         }
@@ -254,7 +271,43 @@ impl Modifier for EmissionShapeModifier {
         } else {
             ""
         };
-        context.main_code.push_str(&format!("\n{{\nlet phase = select(sim_params.time * {:?}, {phase}, {phase} >= 0.0);\nlet sample = source_shape_sample({}u, {}u, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, phase, particle_counter, {count}, {scale});\nlet rotation = vec4<f32>({x:?}, {y:?}, {z:?}, {w:?});\nlet direction = source_shape_rotate(rotation, sample[1]);\nlet mirror = vec3<f32>(1.0, 1.0, -1.0);\nparticle.position = (source_shape_rotate(rotation, sample[0] * {scale}) + {center}) * mirror;\nparticle.velocity = direction * mirror * ({speed});\n{aligned}\n}}\n", self.phase_speed, self.shape, self.arc_mode, self.radius, self.radius_thickness, self.minor_radius, self.cone_angle, self.cone_length, self.arc_angle, self.arc_spread, self.random_direction, self.random_position, self.spherical_direction));
+        let sample = if self.shape == 6 && self.triangle_count > 0 {
+            if self.shape_data_slot == u32::MAX {
+                return Err(ExprError::TypeError(
+                    "Mesh emission requires a bound mesh data texture".into(),
+                ));
+            }
+            let texture = format!("material_texture_{}", self.shape_data_slot);
+            let color = if self.use_mesh_colors {
+                format!(
+                    "let tint = source_mesh_color({texture}, lookup);\nlet initial = vec4<u32>(floor(particle.hdr_color * 255.0 + 0.5));\nlet product = initial * tint + 128u;\nparticle.hdr_color = vec4<f32>((product + (product >> 8u)) >> 8u) / 255.0;\n"
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "let lookup = source_mesh_lookup({texture}, {}u, {}u);\nlet sample = mat2x3<f32>(source_mesh_mix({texture}, lookup.origin, lookup.weights, 1).xyz, source_mesh_mix({texture}, lookup.origin, lookup.weights, 4).xyz);\n{color}",
+                self.triangle_count, self.mesh_placement
+            )
+        } else {
+            format!(
+                "let phase = select(sim_params.time * {:?}, {phase}, {phase} >= 0.0);\nlet sample = source_shape_sample({}u, {}u, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, phase, particle_counter, {count}, {scale});",
+                self.phase_speed,
+                self.shape,
+                self.arc_mode,
+                self.radius,
+                self.radius_thickness,
+                self.minor_radius,
+                self.cone_angle,
+                self.cone_length,
+                self.arc_angle,
+                self.arc_spread,
+                self.random_direction,
+                self.random_position,
+                self.spherical_direction
+            )
+        };
+        context.main_code.push_str(&format!("\n{{\n{sample}\nlet rotation = vec4<f32>({x:?}, {y:?}, {z:?}, {w:?});\nlet direction = source_shape_rotate(rotation, sample[1]);\nlet mirror = vec3<f32>(1.0, 1.0, -1.0);\nparticle.position = (source_shape_rotate(rotation, sample[0] * {scale}) + {center}) * mirror;\nparticle.velocity = direction * mirror * ({speed});\n{aligned}\n}}\n"));
         Ok(())
     }
 }

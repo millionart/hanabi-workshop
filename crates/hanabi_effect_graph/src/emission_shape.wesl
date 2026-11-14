@@ -35,6 +35,57 @@ fn source_shape_donut_cos(turn: f32) -> f32 {
     return ((hi + lo) + bitcast<f32>(0x421ea0cdu) * x8) * x;
 }
 
+struct EmissionTriangle {
+    origin: vec2<i32>,
+    weights: vec3<f32>,
+}
+
+fn source_mesh_texel(data: texture_2d<f32>, pixel: vec2<i32>) -> vec4<f32> {
+    return textureLoad(data, pixel, 0) + textureLoad(data, pixel + vec2<i32>(0, 1), 0) / 2048.0;
+}
+
+fn source_mesh_lookup(data: texture_2d<f32>, count: u32, mode: u32) -> EmissionTriangle {
+    let width = textureDimensions(data).x / 10u;
+    let ticket = frand();
+    var low = 0u;
+    var high = count - 1u;
+    while (low < high) {
+        let i = low + (high - low) / 2u;
+        let coord = vec2<i32>(i32((i % width) * 10u), i32((i / width) * 2u));
+        if (ticket < source_mesh_texel(data, coord).x) { high = i; }
+        else { low = i + 1u; }
+    }
+    let coord = vec2<i32>(i32((low % width) * 10u), i32((low / width) * 2u));
+    if (mode == 1u) {
+        let range = source_mesh_texel(data, coord).xy;
+        let x = clamp((ticket - range.y) / max(range.x - range.y, 1e-10), 0.0, 1.0) * 3.0;
+        let a = clamp(1.0 - x, 0.0, 1.0) + clamp(x - 2.0, 0.0, 1.0);
+        let b = clamp(x, 0.0, 1.0) - clamp(x - 1.0, 0.0, 1.0);
+        let c = clamp(x - 1.0, 0.0, 1.0) - clamp(x - 2.0, 0.0, 1.0);
+        return EmissionTriangle(coord, vec3<f32>(a, b, c));
+    }
+    let r = frand2();
+    let uv = select(r, 1.0 - r, r.x + r.y > 1.0);
+    return EmissionTriangle(coord, vec3<f32>(uv, 1.0 - uv.x - uv.y));
+}
+
+fn source_mesh_mix(data: texture_2d<f32>, pixel: vec2<i32>, weights: vec3<f32>, at: i32) -> vec4<f32> {
+    return (source_mesh_texel(data, pixel + vec2<i32>(at + 1, 0)) * weights.y
+        + source_mesh_texel(data, pixel + vec2<i32>(at, 0)) * weights.x)
+        + source_mesh_texel(data, pixel + vec2<i32>(at + 2, 0)) * weights.z;
+}
+
+fn source_mesh_color(data: texture_2d<f32>, triangle: EmissionTriangle) -> vec4<u32> {
+    let weights = vec3<u32>(triangle.weights * 255.0);
+    var total = vec4<u32>(0u);
+    for (var i = 0; i < 3; i += 1) {
+        let rgba = vec4<u32>(floor(source_mesh_texel(data, triangle.origin + vec2<i32>(i + 7, 0)) * 255.0 + 0.5));
+        let product = rgba * weights[i] + 128u;
+        total += (product + (product >> 8u)) >> 8u;
+    }
+    return min(total, vec4<u32>(255u));
+}
+
 fn source_shape_sample(kind: u32, mode: u32, radius: f32, thickness: f32,
     minor_radius: f32, cone: f32, cone_length: f32, extent: f32, spread: f32,
     random_dir: f32, random_position: f32, spherical: f32, phase: f32,

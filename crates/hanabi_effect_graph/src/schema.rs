@@ -239,7 +239,7 @@ fn is_texture_field(modifier_path: &str, field_name: &str) -> bool {
     base_name(modifier_path) == "ParticleTextureModifier" && field_name == "texture_slot"
         || matches!(
             base_name(modifier_path),
-            "CloudRemapModifier" | "ParticleDistortionModifier"
+            "CloudRemapModifier" | "ParticleDistortionModifier" | "EmissionShapeModifier"
         ) && field_name.ends_with("_slot")
 }
 
