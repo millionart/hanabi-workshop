@@ -104,6 +104,15 @@ pub struct ParticleSnapshotModifier {
     pub trail_segments: bool,
 }
 
+/// Evaluate the authored trail curves at the two original endpoints.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct TrailAppearanceModifier {
+    pub first_width: ExprHandle,
+    pub width: ExprHandle,
+    pub first_color: ExprHandle,
+    pub color: ExprHandle,
+}
+
 pub const PARTICLE_STATE_SLOT: &str = "particle_state";
 pub const TRAIL_STATE_SLOT: &str = "trail_state";
 pub const PARTICLE_STATE_FIELDS: u32 = 7;
@@ -118,6 +127,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<SimulationStepModifier>();
     registry.write().register::<IntegrateMotionModifier>();
     registry.write().register::<ParticleSnapshotModifier>();
+    registry.write().register::<TrailAppearanceModifier>();
     register_reflect_modifier::<VelocityOverLifetimeModifier>(registry, |module| {
         let zero = module.lit(Vec3::ZERO);
         let radial = module.lit(0_f32);
@@ -221,6 +231,53 @@ pub fn register(registry: &AppTypeRegistry) {
             trail_segments: false,
         })
     });
+    register_reflect_modifier::<TrailAppearanceModifier>(registry, |module| {
+        let width = module.lit(1_f32);
+        let color = module.lit(Vec4::ONE);
+        Box::new(TrailAppearanceModifier {
+            first_width: width,
+            width,
+            first_color: color,
+            color,
+        })
+    });
+}
+
+impl Modifier for TrailAppearanceModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[
+            Attribute::SIZE3,
+            Attribute::F32_7,
+            Attribute::F32X2_2,
+            Attribute::F32X2_3,
+            Attribute::F32X4_0,
+            Attribute::F32X4_1,
+            Attribute::F32X4_2,
+            Attribute::F32X4_3,
+        ])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        let first_width = context.eval(module, self.first_width)?;
+        let width = context.eval(module, self.width)?;
+        let first_color = context.eval(module, self.first_color)?;
+        let color = context.eval(module, self.color)?;
+        context.main_code.push_str(&format!(
+            "
+if particle.f32_7 > 0.0 {{
+    particle.f32x2_3 = particle.size3.xy * vec2<f32>({first_width}, {width});
+    particle.f32x4_2 = vec4<f32>(particle.f32x4_0.xyz, particle.f32x2_2.x) * ({first_color});
+    particle.f32x4_3 = vec4<f32>(particle.f32x4_1.xyz, particle.f32x2_2.y) * ({color});
+}}
+"
+        ));
+        Ok(())
+    }
 }
 
 impl Modifier for ParticleSnapshotModifier {
