@@ -151,6 +151,7 @@ struct Roundtrip<'w, 's> {
             &'static document::SceneEmitter,
             &'static bevy_hanabi::CompiledParticleEffect,
             &'static mut bevy_hanabi::EffectSpawner,
+            &'static playback::StartDelay,
         ),
     >,
     edits: MessageWriter<'w, edits::EditRequest>,
@@ -235,12 +236,15 @@ impl Roundtrip<'_, '_> {
             return;
         }
         if self.preview.iter().count() != content.preview_emitter_ids().count()
-            || !self.preview.iter().all(|(_, effect, _)| effect.is_ready())
+            || !self
+                .preview
+                .iter()
+                .all(|(_, effect, _, _)| effect.is_ready())
         {
             return;
         }
         if !*self.started {
-            for (scene, _, mut spawner) in &mut self.preview {
+            for (scene, _, mut spawner, _) in &mut self.preview {
                 if content.emitter_parent(scene.0).is_none() && !spawner.settings.starts_active() {
                     spawner.active = true;
                     spawner.reset();
@@ -252,9 +256,16 @@ impl Roundtrip<'_, '_> {
         if !self
             .preview
             .iter()
-            .any(|(_, _, spawner)| spawner.completed_cycle_count() > 0)
+            .any(|(_, _, spawner, _)| spawner.completed_cycle_count() > 0)
         {
             return;
+        }
+        for (_, _, spawner, delay) in self.preview.iter() {
+            if delay.0.is_some_and(|remaining| remaining > 0.) {
+                assert_eq!(spawner.completed_cycle_count(), 0);
+                assert_eq!(spawner.spawn_count, 0);
+                return;
+            }
         }
         let graph = content.effect_graph();
         let (emitter, node, port, old) = graph

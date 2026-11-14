@@ -352,6 +352,7 @@ fn ensure_scene_root(
 
         let mut emitter_cmds = commands.spawn((
             SceneEmitter(emitter),
+            crate::playback::StartDelay::default(),
             bevy_hanabi::ParticleEffect::new(instance.handle.clone()),
             // Required when the (proxy) asset declares any properties: see
             // seed_props above.

@@ -27,8 +27,8 @@ use std::collections::HashSet;
 
 use bevy::prelude::*;
 use bevy_hanabi::{
-    CompiledParticleEffect, EffectProperties, EffectSimulation, EffectSimulationTime,
-    EffectSpawner, EffectSystems, ShaderCache,
+    CompiledParticleEffect, CpuValue, EffectParent, EffectProperties, EffectSimulation,
+    EffectSimulationTime, EffectSpawner, EffectSystems, Random, ShaderCache, ValueType, VectorType,
 };
 
 use crate::document::{
@@ -75,6 +75,9 @@ pub enum PlaybackCommand {
 
 pub struct PlaybackPlugin;
 
+#[derive(Component, Default)]
+pub(crate) struct StartDelay(pub(crate) Option<f32>);
+
 impl Plugin for PlaybackPlugin {
     fn build(&self, app: &mut App) {
         // `apply_playback_commands` must observe every Respawn emitted by
@@ -93,8 +96,55 @@ impl Plugin for PlaybackPlugin {
             )
             .add_systems(
                 PostUpdate,
-                update_emitter_cycle.after(EffectSystems::TickSpawners),
+                (tick_delayed_spawners, update_emitter_cycle)
+                    .chain()
+                    .after(EffectSystems::TickSpawners),
             );
+    }
+}
+
+fn tick_delayed_spawners(
+    time: Res<Time<EffectSimulation>>,
+    mut random: ResMut<Random>,
+    mut effects: Query<
+        (
+            &CompiledParticleEffect,
+            &EffectProperties,
+            &mut EffectSpawner,
+            &mut StartDelay,
+        ),
+        Without<EffectParent>,
+    >,
+) {
+    for (effect, properties, mut spawner, mut delay) in &mut effects {
+        let Some(range) = properties.get_stored("start_delay") else {
+            continue;
+        };
+        if range.value_type() != ValueType::Vector(VectorType::VEC2F) {
+            continue;
+        }
+        if !effect.is_ready() || !spawner.active || delay.0 == Some(0.) {
+            continue;
+        }
+        let limits = range.as_vector().as_vec2();
+        if !limits.is_finite() || limits.x < 0. || limits.x > limits.y {
+            continue;
+        }
+        let remaining = delay.0.get_or_insert_with(|| {
+            if limits.x == limits.y {
+                limits.x
+            } else {
+                CpuValue::Uniform((limits.x, limits.y)).sample(&mut random.0)
+            }
+        });
+        // Hanabi's native tick has already run. Clear that first cycle and replay only the post-delay frame time.
+        spawner.reset();
+        let dt = time.delta_secs();
+        let until_start = *remaining;
+        *remaining = (until_start - dt).max(0.);
+        if dt > until_start {
+            spawner.tick(dt - until_start, &mut random.0);
+        }
     }
 }
 
@@ -191,7 +241,7 @@ fn cpu_root_spawner_entities(
 fn apply_playback_commands(
     mut commands: Commands,
     mut reader: MessageReader<PlaybackCommand>,
-    mut spawner_q: Query<&mut EffectSpawner>,
+    mut spawner_q: Query<(&mut EffectSpawner, Option<&mut StartDelay>)>,
     docs: Query<&DocumentContent>,
     children_q: Query<&Children>,
     scene_roots: Query<&EmitterSceneEntities, With<DocumentSceneRoot>>,
@@ -223,8 +273,11 @@ fn apply_playback_commands(
                 for spawner_entity in
                     cpu_root_spawner_entities(doc, content, &children_q, &scene_roots)
                 {
-                    if let Ok(mut spawner) = spawner_q.get_mut(spawner_entity) {
+                    if let Ok((mut spawner, delay)) = spawner_q.get_mut(spawner_entity) {
                         spawner.reset();
+                        if let Some(mut delay) = delay {
+                            delay.0 = None;
+                        }
                     }
                 }
             }
