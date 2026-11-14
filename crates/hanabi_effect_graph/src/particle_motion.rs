@@ -32,7 +32,7 @@ pub struct WorldAccelerationModifier {
     pub local_particles: bool,
 }
 
-/// Emit a GPU event when the particle is born or crosses the trail segment spacing.
+/// Emit a GPU event on birth (0), trail spacing (1) or death (2).
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct ParticleSpawnEventModifier {
     pub count: ExprHandle,
@@ -41,6 +41,10 @@ pub struct ParticleSpawnEventModifier {
     pub distance: f32,
     pub probability: f32,
 }
+
+/// Interpret the child's shape around the parent position already stored in world space.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct SubEmitterTransformModifier;
 
 /// Draw position and direction from one editable emitter shape.
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
@@ -99,6 +103,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<WorldAccelerationModifier>();
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
+    registry.write().register::<SubEmitterTransformModifier>();
     registry.write().register::<EmissionShapeModifier>();
     registry.write().register::<SimulationStepModifier>();
     registry.write().register::<IntegrateMotionModifier>();
@@ -156,6 +161,9 @@ pub fn register(registry: &AppTypeRegistry) {
             distance: 0.1,
             probability: 1.,
         })
+    });
+    register_reflect_modifier::<SubEmitterTransformModifier>(registry, |_| {
+        Box::new(SubEmitterTransformModifier)
     });
     register_reflect_modifier::<EmissionShapeModifier>(registry, |module| {
         Box::new(EmissionShapeModifier {
@@ -369,10 +377,10 @@ impl Modifier for ParticleSpawnEventModifier {
         ModifierContext::Update
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        if self.mode == 0 {
-            Cow::Borrowed(&[Attribute::AGE])
-        } else {
+        if self.mode == 1 {
             Cow::Borrowed(&[Attribute::AGE, Attribute::POSITION, Attribute::F32X3_3])
+        } else {
+            Cow::Borrowed(&[Attribute::AGE])
         }
     }
     fn boxed_clone(&self) -> BoxedModifier {
@@ -382,25 +390,43 @@ impl Modifier for ParticleSpawnEventModifier {
         context.set_emits_gpu_spawn_events(true)?;
         let count = context.eval(module, self.count)?;
         let birth = format!("particle.age <= {}", simulation_delta(context));
-        let condition = if self.mode == 0 {
-            birth
-        } else {
-            format!(
-                "({birth} || distance(particle.position, particle.f32x3_3) >= {:?})",
+        let condition = match self.mode {
+            1 => format!(
+                "is_alive && ({birth} || distance(particle.position, particle.f32x3_3) >= {:?})",
                 self.distance.max(0.)
-            )
+            ),
+            2 => "was_alive && !is_alive".into(),
+            _ => format!("is_alive && {birth}"),
         };
-        let record = if self.mode == 0 {
-            ""
-        } else {
+        let record = if self.mode == 1 {
             "particle.f32x3_3 = particle.position;"
+        } else {
+            ""
         };
         let chance = if self.probability >= 1. {
             String::new()
         } else {
             format!(" && frand() < {:?}", self.probability)
         };
-        context.main_code.push_str(&format!("\nif (is_alive && {condition}{chance}) {{ {record} append_spawn_events_{}((*effect_metadata).base_child_index, particle_index, {count}); }}\n", self.child_index));
+        context.main_code.push_str(&format!("\nif ({condition}{chance}) {{ {record} append_spawn_events_{}((*effect_metadata).base_child_index, particle_index, {count}); }}\n", self.child_index));
+        Ok(())
+    }
+}
+
+impl Modifier for SubEmitterTransformModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Init
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        context.main_code.push_str(
+            "\nparticle.position = (transform * vec4<f32>(particle.position, 0.0)).xyz;\nparticle.velocity = (transform * vec4<f32>(particle.velocity, 0.0)).xyz;\n",
+        );
         Ok(())
     }
 }
