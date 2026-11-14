@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use bevy::{
-    math::Vec3,
+    math::{Vec3, Vec4},
     prelude::{AppTypeRegistry, Reflect},
 };
 use bevy_hanabi::{
@@ -42,11 +42,37 @@ pub struct ParticleSpawnEventModifier {
     pub probability: f32,
 }
 
+/// Draw position and direction from one editable emitter shape.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct EmissionShapeModifier {
+    pub speed: ExprHandle,
+    pub phase: ExprHandle,
+    pub burst_size: ExprHandle,
+    pub shape: u32,
+    pub center: Vec3,
+    pub scale: Vec3,
+    pub orientation: Vec4,
+    pub radius: f32,
+    pub radius_thickness: f32,
+    pub minor_radius: f32,
+    pub cone_angle: f32,
+    pub cone_length: f32,
+    pub arc_angle: f32,
+    pub arc_mode: u32,
+    pub arc_spread: f32,
+    pub phase_speed: f32,
+    pub random_direction: f32,
+    pub random_position: f32,
+    pub spherical_direction: f32,
+    pub align_to_direction: bool,
+}
+
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
     registry.write().register::<WorldAccelerationModifier>();
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
+    registry.write().register::<EmissionShapeModifier>();
     register_reflect_modifier::<VelocityOverLifetimeModifier>(registry, |module| {
         let zero = module.lit(Vec3::ZERO);
         let radial = module.lit(0_f32);
@@ -101,6 +127,67 @@ pub fn register(registry: &AppTypeRegistry) {
             probability: 1.,
         })
     });
+    register_reflect_modifier::<EmissionShapeModifier>(registry, |module| {
+        Box::new(EmissionShapeModifier {
+            speed: module.lit(1_f32),
+            phase: module.lit(-1_f32),
+            burst_size: module.lit(1_u32),
+            shape: 0,
+            center: Vec3::ZERO,
+            scale: Vec3::ONE,
+            orientation: Vec4::W,
+            radius: 1.,
+            radius_thickness: 1.,
+            minor_radius: 0.2,
+            cone_angle: 0.5,
+            cone_length: 0.,
+            arc_angle: std::f32::consts::TAU,
+            arc_mode: 0,
+            arc_spread: 0.,
+            phase_speed: 1.,
+            random_direction: 0.,
+            random_position: 0.,
+            spherical_direction: 0.,
+            align_to_direction: false,
+        })
+    });
+}
+
+impl Modifier for EmissionShapeModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Init
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        if self.align_to_direction {
+            Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY, Attribute::F32X2_0])
+        } else {
+            Cow::Borrowed(&[Attribute::POSITION, Attribute::VELOCITY])
+        }
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        let speed = context.eval(module, self.speed)?;
+        let phase = context.eval(module, self.phase)?;
+        let count = context.eval(module, self.burst_size)?;
+        if !context.extra_code.contains("fn source_shape_sample(") {
+            context
+                .extra_code
+                .push_str(include_str!("emission_shape.wesl"));
+        }
+        let vector = |v: Vec3| format!("vec3<f32>({:?}, {:?}, {:?})", v.x, v.y, v.z);
+        let [x, y, z, w] = self.orientation.to_array();
+        let center = vector(self.center);
+        let scale = vector(self.scale);
+        let aligned = if self.align_to_direction {
+            "let horizontal = dot(direction.xz, direction.xz);\nlet yaw = select(select(3.14159265359, -sign(direction.y) * 1.57079632679, direction.y != 0.0), atan2(direction.x, -direction.z), horizontal > 1e-30);\nparticle.f32x2_0 += vec2<f32>(-atan2(direction.y, sqrt(horizontal)), yaw);"
+        } else {
+            ""
+        };
+        context.main_code.push_str(&format!("\n{{\nlet phase = select(sim_params.time * {:?}, {phase}, {phase} >= 0.0);\nlet sample = source_shape_sample({}u, {}u, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, phase, particle_counter, {count}, {scale});\nlet rotation = vec4<f32>({x:?}, {y:?}, {z:?}, {w:?});\nlet direction = source_shape_rotate(rotation, sample[1]);\nlet mirror = vec3<f32>(1.0, 1.0, -1.0);\nparticle.position = (source_shape_rotate(rotation, sample[0] * {scale}) + {center}) * mirror;\nparticle.velocity = direction * mirror * ({speed});\n{aligned}\n}}\n", self.phase_speed, self.shape, self.arc_mode, self.radius, self.radius_thickness, self.minor_radius, self.cone_angle, self.cone_length, self.arc_angle, self.arc_spread, self.random_direction, self.random_position, self.spherical_direction));
+        Ok(())
+    }
 }
 
 impl Modifier for ParticleSpawnEventModifier {
