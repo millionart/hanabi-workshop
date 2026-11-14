@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
 use bevy::{
-    math::{Vec2, Vec4},
+    math::{Vec2, Vec3, Vec4},
     prelude::{AppTypeRegistry, Reflect},
 };
 use bevy_hanabi::{
     Attribute, BoxedModifier, ExprError, Modifier, ModifierContext, Module, RenderContext,
-    RenderModifier, ShaderWriter, register_reflect_modifier,
+    RenderModifier, ShaderWriter, ToWgslString, register_reflect_modifier,
 };
 use serde::{Deserialize, Serialize};
 
@@ -134,6 +134,10 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<DamageNumberModifier>();
     registry.write().register::<SnapshotColorModifier>();
     registry.write().register::<SurfaceLightingModifier>();
+    registry.write().register::<TerrainParticleModifier>();
+    register_reflect_modifier::<TerrainParticleModifier>(registry, |_| {
+        Box::new(TerrainParticleModifier::default())
+    });
     registry.write().register::<LegacyParticleModifier>();
     register_reflect_modifier::<CloudRemapModifier>(registry, |_| {
         Box::new(CloudRemapModifier::default())
@@ -442,6 +446,168 @@ pub struct SurfaceLightingModifier {
 }
 
 pub const SCENE_LIGHT_SLOT: &str = "scene_light";
+
+/// Three projected terrain layers with the source height blend.
+#[derive(Clone, Copy, Debug, Default, Reflect, Serialize, Deserialize)]
+pub struct TerrainParticleModifier {
+    pub light_slot: u32,
+    pub top_slot: u32,
+    pub side_slot: u32,
+    pub green_slot: u32,
+    pub blue_slot: u32,
+    pub normal_slot: u32,
+    pub splat_slot: u32,
+    pub top_scale: Vec2,
+    pub side_scale: Vec2,
+    pub green_scale: Vec2,
+    pub blue_scale: Vec2,
+    pub normal_scale: Vec2,
+    pub texture_factor: f32,
+    pub normal_strength: f32,
+    pub depth: f32,
+    pub bias: Vec3,
+    pub smoothness: Vec3,
+    pub reflectance: Vec3,
+    pub tint: Vec4,
+    pub vertex_color: bool,
+    pub mix_vertex_color: bool,
+    pub double_sample: bool,
+}
+
+impl Modifier for TerrainParticleModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Terrain particle materials use the fragment stage.",
+        ))
+    }
+}
+
+impl RenderModifier for TerrainParticleModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_normal();
+        context.set_needs_uv();
+        if !context.render_extra.contains("fn terrain_height_mix(") {
+            context
+                .render_extra
+                .push_str(include_str!("terrain_particle.wesl"));
+        }
+        let mut code = String::from("{\n");
+        fragment_world_position(&mut code);
+        let light = self.light_slot;
+        let top = self.top_slot;
+        let side = self.side_slot;
+        let green = self.green_slot;
+        let blue = self.blue_slot;
+        let normal = self.normal_slot;
+        let splat = self.splat_slot;
+        let tint = self.tint.to_wgsl_string();
+        let normal_scale = self.normal_scale * self.texture_factor;
+        let depth = self.depth.to_wgsl_string();
+        let normal_strength = self.normal_strength.to_wgsl_string();
+        let bias = self.bias.to_wgsl_string();
+        code.push_str(&format!("
+let world = world_h.xyz / world_h.w;
+let projected_position = world * vec3<f32>(1.0, 1.0, -1.0);
+let geometric = normalize(normal);
+let n_abs = abs(geometric);
+let geometric_weights = n_abs / max(n_abs.x + n_abs.y + n_abs.z, 1e-8);
+let packed_normal = terrain_projected(material_texture_{normal}, material_sampler_{normal}, projected_position, {normal_scale}, geometric_weights);
+let xy = (vec2<f32>(packed_normal.x * packed_normal.a, packed_normal.g) * 2.0 - 1.0) * {normal_strength};
+let px = dpdx(world);
+let py = dpdy(world);
+let ux = dpdx(uv);
+let uy = dpdy(uv);
+let orientation = sign(ux.x * uy.y - ux.y * uy.x);
+let tangent = (px * uy.y - py * ux.y) * orientation;
+let bitangent = (py * ux.x - px * uy.x) * orientation;
+var surface_normal = geometric;
+if length(tangent) > 1e-7 && length(bitangent) > 1e-7 {{
+    surface_normal = normalize(mat3x3<f32>(normalize(tangent), normalize(bitangent), geometric) * vec3<f32>(xy, sqrt(max(1.0 - dot(xy, xy), 0.0))));
+}}
+let n_planes = abs(surface_normal);
+let planes = n_planes / max(n_planes.x + n_planes.y + n_planes.z, 1e-8);
+let splat = textureSample(material_texture_{splat}, material_sampler_{splat}, uv).rgb;
+let vertex_color = vec3<f32>(1.0);
+let paint = {paint} + {bias};
+",
+            normal_scale = normal_scale.to_wgsl_string(),
+            paint = if self.mix_vertex_color { "(vertex_color + splat) * 0.5" }
+                else if self.vertex_color { "vertex_color" } else { "splat" },
+        ));
+        for (suffix, scale) in [("fine", 1.), ("coarse", 0.2)] {
+            if suffix == "coarse" && !self.double_sample {
+                break;
+            }
+            let scale = |st: Vec2| (st * (self.texture_factor * scale)).to_wgsl_string();
+            let top_scale = scale(self.top_scale);
+            let side_scale = scale(self.side_scale);
+            let green_scale = scale(self.green_scale);
+            let blue_scale = scale(self.blue_scale);
+            code.push_str(&format!("
+let red_{suffix} = (textureSample(material_texture_{top}, material_sampler_{top}, projected_position.xz * {top_scale}) * planes.y
+    + textureSample(material_texture_{side}, material_sampler_{side}, projected_position.zy * {side_scale}) * planes.x
+    + textureSample(material_texture_{side}, material_sampler_{side}, projected_position.xy * {side_scale}) * planes.z) * {tint};
+let green_{suffix} = terrain_projected(material_texture_{green}, material_sampler_{green}, projected_position, {green_scale}, planes);
+let blue_{suffix} = terrain_projected(material_texture_{blue}, material_sampler_{blue}, projected_position, {blue_scale}, planes);
+let blend_{suffix} = terrain_height_mix(vec3<f32>(red_{suffix}.a, green_{suffix}.a, blue_{suffix}.a), paint, {depth});
+let base_{suffix} = red_{suffix}.rgb * blend_{suffix}.x + green_{suffix}.rgb * blend_{suffix}.y + blue_{suffix}.rgb * blend_{suffix}.z;
+"));
+        }
+        if self.double_sample {
+            code.push_str("let factor = blend_coarse.w / max(blend_fine.w + blend_coarse.w, 1e-8);\nlet base = mix(base_coarse, base_fine, factor);\nlet weights = mix(blend_coarse.xyz, blend_fine.xyz, factor);\n");
+        } else {
+            code.push_str("let base = base_fine;\nlet weights = blend_fine.xyz;\n");
+        }
+        let smoothness = self.smoothness.to_wgsl_string();
+        let reflectance = self.reflectance.to_wgsl_string();
+        code.push_str(&format!("
+let world_light = textureLoad(material_texture_{light}, vec2<i32>(0, 0), 0);
+let l = normalize(select(vec3<f32>(0.3, 0.7, 0.6), world_light.xyz, world_light.w > 1.5));
+let diffuse = select(vec3<f32>(0.85), textureLoad(material_texture_{light}, vec2<i32>(1, 0), 0).rgb, world_light.w > 1.5);
+let ambient = select(vec3<f32>(0.15), textureLoad(material_texture_{light}, vec2<i32>(2, 0), 0).rgb, world_light.w > 1.5);
+let v = normalize(view.world_position - world);
+let h = normalize(l + v);
+let roughness = 1.0 - dot(weights, {smoothness});
+let reflectance = dot(weights, {reflectance});
+let a = max(roughness * roughness, 0.002);
+let mu = max(dot(surface_normal, l), 0.0);
+let nh = max(dot(surface_normal, h), 0.0);
+let d = (a * a) / max(3.14159265 * pow(nh * nh * (a * a - 1.0) + 1.0, 2.0), 1e-5);
+let f0 = 0.16 * reflectance * reflectance;
+let f = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
+color = vec4<f32>(base * (ambient + diffuse * mu) + diffuse * (f * d * mu * 0.25), 1.0);
+}}
+"));
+        context.fragment_code.push_str(&code);
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
+}
 
 impl Modifier for SurfaceLightingModifier {
     fn context(&self) -> ModifierContext {
