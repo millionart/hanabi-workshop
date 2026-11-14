@@ -38,8 +38,8 @@ use bevy::{
     },
 };
 use bevy_hanabi::{
-    BoxedModifier, EffectAsset, EffectShaderSources, EmitSpawnEventModifier, Expr, ExprHandle,
-    ModifierContext, Module, ReflectModifier, SetPositionCircleModifier, SetVelocityCircleModifier,
+    BoxedModifier, EffectAsset, EffectShaderSources, Expr, ExprHandle, ModifierContext, Module,
+    ReflectModifier, SetPositionCircleModifier, SetVelocityCircleModifier,
     SetVelocityTangentModifier, SlotDimension, SpawnerSettings, TangentAccelModifier, Value,
     graph::expr::{
         BinaryOperator, PropertyHandle, TernaryOperator, TextureLoadExpr, TextureSampleExpr,
@@ -927,7 +927,7 @@ impl<'a, 'm> ExprBaker<'a, 'm> {
                     ));
                     continue;
                 };
-                if !set_texture_slot_field(boxed.as_reflect_mut(), &field.name, slot_index) {
+                if !set_u32_field(boxed.as_reflect_mut(), &field.name, slot_index) {
                     errors.push(BakeError::node(
                         node_id,
                         format!("could not set texture field '{}'", field.name),
@@ -975,7 +975,7 @@ impl<'a, 'm> ExprBaker<'a, 'm> {
         // derived topology. Under the currently supported single-child-per-parent
         // topology every emitter channels into index 0; `child_indices` only
         // disagrees once multi-child parents are supported.
-        if type_path.as_ref() == EmitSpawnEventModifier::type_path() {
+        if crate::schema::is_spawn_event_modifier(type_path) {
             let Some(child_index) = child_indices.get(&node_id).copied() else {
                 // An unlinked event output is inert. Hanabi has no disabled
                 // emitter representation: baking its default child index 0
@@ -983,11 +983,12 @@ impl<'a, 'm> ExprBaker<'a, 'm> {
                 // buffer that defines that helper, producing invalid WGSL.
                 return None;
             };
-            if let Some(emit) = boxed
-                .as_reflect_mut()
-                .downcast_mut::<EmitSpawnEventModifier>()
-            {
-                emit.child_index = child_index;
+            if !set_u32_field(boxed.as_reflect_mut(), "child_index", child_index) {
+                errors.push(BakeError::node(
+                    node_id,
+                    "spawn event modifier has no child index",
+                ));
+                return None;
             }
         }
 
@@ -1054,8 +1055,8 @@ fn set_expr_field(
     false
 }
 
-/// Set a static texture-slot index field by name.
-fn set_texture_slot_field(reflect: &mut dyn Reflect, name: &str, slot_index: u32) -> bool {
+/// Set a reflected index field by name.
+fn set_u32_field(reflect: &mut dyn Reflect, name: &str, slot_index: u32) -> bool {
     let ReflectMut::Struct(s) = reflect.reflect_mut() else {
         return false;
     };
@@ -1797,6 +1798,7 @@ mod tests {
 
     use super::*;
     use crate::model::{GraphLink, GraphNode, InputSlot, PortRef};
+    use bevy_hanabi::EmitSpawnEventModifier;
 
     /// A fixed emitter id for tests that build a bare [`EmitterGraph`] outside
     /// any [`EffectGraph`] document.

@@ -65,12 +65,12 @@ use std::{
 
 use bevy::{
     math::{Vec3, Vec4},
-    reflect::{TypePath, TypeRegistry},
+    reflect::TypeRegistry,
 };
 use bevy_egui::egui::Color32;
 use bevy_hanabi::{
-    Attribute, CpuValue, EmitSpawnEventModifier, Gradient, ScalarType, SpawnerSettings,
-    ToWgslString, Value, ValueType, VectorType, VectorValue,
+    Attribute, CpuValue, Gradient, ScalarType, SpawnerSettings, ToWgslString, Value, ValueType,
+    VectorType, VectorValue,
 };
 use hanabi_node_graph::{
     ContainerDesc, ContainerId as WContainerId, GraphView, GraphViewer, Link, LinkVerdict,
@@ -1739,7 +1739,7 @@ fn join_warnings(messages: &[&str]) -> Option<String> {
 /// the only modifier kind that gets an event output port (and only when it
 /// sits in an Update stack — see [`GraphReader::node`]).
 fn is_emit_spawn_event_modifier(type_path: &str) -> bool {
-    type_path == EmitSpawnEventModifier::type_path()
+    hanabi_effect_graph::schema::is_spawn_event_modifier(type_path)
 }
 
 /// Execution order of a modifier group: Init < Update < Render.

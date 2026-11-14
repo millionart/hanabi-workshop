@@ -32,10 +32,21 @@ pub struct WorldAccelerationModifier {
     pub local_particles: bool,
 }
 
+/// Emit a GPU event when the particle is born or crosses the trail segment spacing.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct ParticleSpawnEventModifier {
+    pub count: ExprHandle,
+    pub child_index: u32,
+    pub mode: u32,
+    pub distance: f32,
+    pub probability: f32,
+}
+
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<VelocityOverLifetimeModifier>();
     registry.write().register::<WorldAccelerationModifier>();
     registry.write().register::<CurlNoiseModifier>();
+    registry.write().register::<ParticleSpawnEventModifier>();
     register_reflect_modifier::<VelocityOverLifetimeModifier>(registry, |module| {
         let zero = module.lit(Vec3::ZERO);
         let radial = module.lit(0_f32);
@@ -80,6 +91,56 @@ pub fn register(registry: &AppTypeRegistry) {
             size_from_lifetime: false,
         })
     });
+    register_reflect_modifier::<ParticleSpawnEventModifier>(registry, |module| {
+        Box::new(ParticleSpawnEventModifier {
+            count: module.lit(1_u32),
+            child_index: 0,
+            mode: 0,
+            distance: 0.1,
+            probability: 1.,
+        })
+    });
+}
+
+impl Modifier for ParticleSpawnEventModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        if self.mode == 0 {
+            Cow::Borrowed(&[Attribute::AGE])
+        } else {
+            Cow::Borrowed(&[Attribute::AGE, Attribute::POSITION, Attribute::F32X3_3])
+        }
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        context.set_emits_gpu_spawn_events(true)?;
+        let count = context.eval(module, self.count)?;
+        let birth = "particle.age <= sim_params.delta_time";
+        let condition = if self.mode == 0 {
+            birth.to_owned()
+        } else {
+            format!(
+                "({birth} || distance(particle.position, particle.f32x3_3) >= {:?})",
+                self.distance.max(0.)
+            )
+        };
+        let record = if self.mode == 0 {
+            ""
+        } else {
+            "particle.f32x3_3 = particle.position;"
+        };
+        let chance = if self.probability >= 1. {
+            String::new()
+        } else {
+            format!(" && frand() < {:?}", self.probability)
+        };
+        context.main_code.push_str(&format!("\nif (is_alive && {condition}{chance}) {{ {record} append_spawn_events_{}((*effect_metadata).base_child_index, particle_index, {count}); }}\n", self.child_index));
+        Ok(())
+    }
 }
 
 impl Modifier for WorldAccelerationModifier {

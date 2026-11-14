@@ -36,7 +36,9 @@
 use std::collections::HashMap;
 
 use bevy::reflect::{TypePath, TypeRegistry};
-use bevy_hanabi::{Attribute, EffectAsset, EmitSpawnEventModifier, InheritAttributeModifier};
+#[cfg(test)]
+use bevy_hanabi::EmitSpawnEventModifier;
+use bevy_hanabi::{Attribute, EffectAsset, InheritAttributeModifier};
 
 use crate::{
     ModifierGroup,
@@ -193,9 +195,7 @@ impl TopologyError {
 ///   parents), and no emitter is its own ancestor (no cycles);
 /// - a CPU-rooted emitter (no parent) never reads `ParentAttribute` or carries
 ///   an `InheritAttributeModifier`, since neither has meaning without a parent;
-/// - value links stay within their owning emitter;
-/// - (temporary) no parent emitter drives more than one connected GPU child —
-///   the runtime supports a single child emitter per parent for now.
+/// - value links stay within their owning emitter.
 ///
 /// Every check runs independently and contributes to the same error list;
 /// this function never panics, even on a badly malformed, mid-edit graph.
@@ -208,7 +208,6 @@ pub fn validate_topology(effect_graph: &EffectGraph) -> Vec<TopologyError> {
     check_mixed_parents_and_cycles(effect_graph, &mut errors);
     check_cpu_root_parent_usage(effect_graph, &mut errors);
     check_cross_emitter_value_links(effect_graph, &mut errors);
-    check_single_child_restriction(effect_graph, &mut errors);
     errors
 }
 
@@ -337,7 +336,7 @@ fn check_emitter_placement(effect_graph: &EffectGraph, errors: &mut Vec<Topology
         let is_known_emitter = matches!(
             &node.payload,
             NodePayload::Modifier(ModifierNodeData::Known { type_path, .. })
-                if type_path.as_ref() == EmitSpawnEventModifier::type_path()
+                if crate::schema::is_spawn_event_modifier(type_path)
         );
         if !is_known_emitter {
             errors.push(TopologyError::node(
@@ -352,7 +351,7 @@ fn check_emitter_placement(effect_graph: &EffectGraph, errors: &mut Vec<Topology
             let is_known_emitter = matches!(
                 &node.payload,
                 NodePayload::Modifier(ModifierNodeData::Known { type_path, .. })
-                    if type_path.as_ref() == EmitSpawnEventModifier::type_path()
+                    if crate::schema::is_spawn_event_modifier(type_path)
             );
             if !is_known_emitter {
                 continue;
@@ -466,35 +465,6 @@ fn check_cross_emitter_value_links(effect_graph: &EffectGraph, errors: &mut Vec<
                     )),
                 }
             }
-        }
-    }
-}
-
-/// Temporary restriction: a parent emitter may drive at most one *connected*
-/// child GPU source context.
-///
-/// The runtime supports a single child emitter per parent today (see
-/// `EmitSpawnEventModifier::child_index` upstream); lifting this once
-/// multi-child parents are supported only requires removing this check, since
-/// [`crate::bake::derive_emitter_child_indices`] already assigns distinct
-/// channels per target source.
-fn check_single_child_restriction(effect_graph: &EffectGraph, errors: &mut Vec<TopologyError>) {
-    for emitter in &effect_graph.emitters {
-        let mut children: Vec<SourceId> = effect_graph
-            .event_links
-            .iter()
-            .filter(|l| effect_graph.emitter_owning_node(l.node) == Some(emitter.id))
-            .map(|l| l.target)
-            .filter(|target| effect_graph.emitter_for_source(*target).is_some())
-            .collect();
-        children.sort_by_key(|s| s.get());
-        children.dedup();
-        if children.len() > 1 {
-            errors.push(TopologyError::emitter(
-                emitter.id,
-                "emitter has more than one connected child emitter via distinct GPU sources; \
-                 only a single child per parent is currently supported",
-            ));
         }
     }
 }
@@ -920,7 +890,7 @@ mod topology_tests {
     }
 
     #[test]
-    fn sibling_fanout_from_one_parent_is_rejected() {
+    fn sibling_fanout_gets_distinct_channels() {
         let (mut effect_graph, parent_id, ..) = cpu_to_gpu_child_effect();
         // A second, distinct GPU source + child fed by the same parent.
         let second_gpu = SourceId::new(100).unwrap();
@@ -957,10 +927,13 @@ mod topology_tests {
         });
 
         let errors = validate_topology(&effect_graph);
-        assert!(errors.iter().any(|e| {
-            e.subject == TopologySubject::Emitter(parent_id)
-                && e.message.contains("only a single child per parent")
-        }));
+        assert!(errors.is_empty(), "{errors:?}");
+        let channels = crate::bake::derive_emitter_child_indices(&effect_graph, parent_id);
+        let ids = channels
+            .values()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids, [0, 1].into());
     }
 
     #[test]

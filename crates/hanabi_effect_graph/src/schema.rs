@@ -197,7 +197,14 @@ fn classify_field(
 ///
 /// [`EventLink`]: crate::model::EventLink
 fn is_topology_owned_field(modifier_path: &str, field_name: &str) -> bool {
-    base_name(modifier_path) == "EmitSpawnEventModifier" && field_name == "child_index"
+    is_spawn_event_modifier(modifier_path) && field_name == "child_index"
+}
+
+pub fn is_spawn_event_modifier(type_path: &str) -> bool {
+    matches!(
+        base_name(type_path),
+        "EmitSpawnEventModifier" | "ParticleSpawnEventModifier"
+    )
 }
 
 /// The last path segment of a type path, ignoring generic arguments.
