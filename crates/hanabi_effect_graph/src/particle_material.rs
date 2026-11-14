@@ -138,6 +138,18 @@ pub fn register(registry: &AppTypeRegistry) {
     register_reflect_modifier::<TerrainParticleModifier>(registry, |_| {
         Box::new(TerrainParticleModifier::default())
     });
+    registry.write().register::<SnowToppedParticleModifier>();
+    register_reflect_modifier::<SnowToppedParticleModifier>(registry, |_| {
+        Box::new(SnowToppedParticleModifier {
+            albedo_uv: Vec4::new(1., 1., 0., 0.),
+            normal_uv: Vec4::new(1., 1., 0., 0.),
+            normal_strength: 1.,
+            texture_factor: 1.,
+            depth: 0.1,
+            tint: Vec4::ONE,
+            ..Default::default()
+        })
+    });
     registry.write().register::<LegacyParticleModifier>();
     register_reflect_modifier::<CloudRemapModifier>(registry, |_| {
         Box::new(CloudRemapModifier::default())
@@ -506,7 +518,7 @@ impl RenderModifier for TerrainParticleModifier {
     fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
         context.set_needs_normal();
         context.set_needs_uv();
-        if !context.render_extra.contains("fn terrain_height_mix(") {
+        if !context.render_extra.contains("fn terrain_projected(") {
             context
                 .render_extra
                 .push_str(include_str!("terrain_particle.wesl"));
@@ -598,6 +610,171 @@ let f = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
 color = vec4<f32>(base * (ambient + diffuse * mu) + diffuse * (f * d * mu * 0.25), 1.0);
 }}
 "));
+        context.fragment_code.push_str(&code);
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
+}
+
+/// Triplanar snow and dirt projected over the original base texture.
+#[derive(Clone, Copy, Debug, Default, Reflect, Serialize, Deserialize)]
+pub struct SnowToppedParticleModifier {
+    pub light_slot: u32,
+    pub albedo_slot: u32,
+    pub normal_slot: u32,
+    pub snow_slot: u32,
+    pub snow_normal_slot: u32,
+    pub dirt_slot: u32,
+    pub dirt_normal_slot: u32,
+    pub albedo_uv: Vec4,
+    pub normal_uv: Vec4,
+    pub tint: Vec4,
+    pub texture_factor: f32,
+    pub normal_strength: f32,
+    pub depth: f32,
+    pub snow_bias: f32,
+    pub dirt_bias: f32,
+    pub smoothness: Vec3,
+    pub specular_strength: Vec3,
+    pub specular_exponent: Vec3,
+    pub use_dirt: bool,
+    pub use_dirt_normal: bool,
+}
+
+impl Modifier for SnowToppedParticleModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Snow Topped is a fragment modifier.",
+        ))
+    }
+}
+
+impl RenderModifier for SnowToppedParticleModifier {
+    fn apply_render(&self, _: &mut Module, context: &mut RenderContext) -> Result<(), ExprError> {
+        context.set_needs_normal();
+        context.set_needs_uv();
+        if !context.render_extra.contains("fn terrain_projected(") {
+            context
+                .render_extra
+                .push_str(include_str!("terrain_particle.wesl"));
+        }
+        if !context.render_extra.contains("fn snow_topped_normal(") {
+            context
+                .render_extra
+                .push_str(include_str!("snow_topped_particle.wesl"));
+        }
+        let mut code = String::from("{\n");
+        fragment_world_position(&mut code);
+        let uv = |transform: Vec4| {
+            format!(
+                "(uv * {} + {})",
+                transform.truncate().truncate().to_wgsl_string(),
+                Vec2::new(transform.z, transform.w).to_wgsl_string()
+            )
+        };
+        let sample = |slot: u32, coords: &str| {
+            format!("textureSample(material_texture_{slot}, material_sampler_{slot}, {coords})")
+        };
+        let projected = |slot| {
+            format!(
+                "terrain_projected(material_texture_{slot}, material_sampler_{slot}, projection, vec2<f32>(1.0, -1.0), planes)"
+            )
+        };
+        let dirt = if self.use_dirt {
+            projected(self.dirt_slot)
+        } else {
+            "vec4<f32>(0.0)".into()
+        };
+        let dirt_normal = if self.use_dirt && self.use_dirt_normal {
+            sample(self.dirt_normal_slot, "normal_uv")
+        } else {
+            "vec4<f32>(0.5, 0.5, 1.0, 1.0)".into()
+        };
+        let layer_heights = if self.use_dirt {
+            format!(
+                "vec3<f32>(1.0 + base.a, snow_mask + snow.a, clamp(color.b + {:?}, 0.0, 1.0) + dirt.a)",
+                self.dirt_bias
+            )
+        } else {
+            "vec3<f32>(1.0 - snow_mask + base.a, snow_mask + snow.a, -1.0)".into()
+        };
+        code.push_str(&format!(
+            r#"
+let world = world_h.xyz / world_h.w;
+let normal_uv = {normal_uv};
+let base_normal = {base_normal};
+let basis = snow_topped_basis(world, vec2<f32>(uv.x, 1.0 - uv.y), normalize(normal));
+let projected_normal = basis * snow_topped_normal(base_normal, {normal_strength:?});
+let plane_weights = abs(projected_normal);
+let planes = plane_weights / max(dot(plane_weights, vec3<f32>(1.0)), 1e-8);
+let projection = world * vec3<f32>(1.0, 1.0, -1.0) * {texture_factor:?};
+let snow_mask = clamp(projected_normal.y + {snow_bias:?}, 0.0, 1.0);
+let base = {base} * {tint};
+let snow = {snow};
+let dirt = {dirt};
+let weights = snow_topped_weights({layer_heights}, {depth:?});
+let snow_normal = {snow_normal};
+let dirt_normal = {dirt_normal};
+let packed_normal = base_normal * weights.x + snow_normal * weights.y + dirt_normal * weights.z;
+let n = normalize(basis * snow_topped_normal(packed_normal, {normal_strength:?}));
+let albedo = base.rgb * weights.x + snow.rgb * weights.y + dirt.rgb * weights.z;
+let reflectance = dot(weights * vec3<f32>(1.0 - base.a, 1.0, 1.0), {specular_strength});
+let smoothness = dot(weights, {smoothness});
+let exponent = dot(weights, {specular_exponent});
+let light = textureLoad(material_texture_{light}, vec2<i32>(0, 0), 0);
+let l = normalize(select(vec3<f32>(0.3, 0.7, 0.6), light.xyz, light.w > 1.5));
+let diffuse = select(vec3<f32>(0.85), textureLoad(material_texture_{light}, vec2<i32>(1, 0), 0).rgb, light.w > 1.5);
+let ambient = select(vec3<f32>(0.15), textureLoad(material_texture_{light}, vec2<i32>(2, 0), 0).rgb, light.w > 1.5);
+let h = normalize(l + normalize(view.world_position - world));
+let mu = max(dot(n, l), 0.0);
+let roughness = 1.0 - clamp(smoothness, 0.0, 1.0);
+let a = max(roughness * roughness, 0.002);
+let nh = max(dot(n, h), 0.0);
+let lobe = (a * a) / max(3.14159265 * pow(nh * nh * (a * a - 1.0) + 1.0, 2.0), 1e-5);
+let specular = reflectance * pow(max(nh, 1e-6), max(exponent, 0.0)) * lobe * 0.25;
+color = vec4<f32>(albedo * (ambient + diffuse * mu) + diffuse * mu * specular, 1.0);
+}}
+"#,
+            normal_uv = uv(self.normal_uv),
+            base_normal = sample(self.normal_slot, "normal_uv"),
+            snow_normal = sample(self.snow_normal_slot, "normal_uv"),
+            base = sample(self.albedo_slot, &uv(self.albedo_uv)),
+            snow = projected(self.snow_slot),
+            normal_strength = self.normal_strength,
+            texture_factor = self.texture_factor,
+            snow_bias = self.snow_bias,
+            tint = self.tint.to_wgsl_string(),
+            depth = self.depth.max(1e-5),
+            specular_strength = self.specular_strength.to_wgsl_string(),
+            smoothness = self.smoothness.to_wgsl_string(),
+            specular_exponent = self.specular_exponent.to_wgsl_string(),
+            light = self.light_slot,
+        ));
         context.fragment_code.push_str(&code);
         Ok(())
     }

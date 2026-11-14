@@ -264,55 +264,45 @@ impl Roundtrip<'_, '_> {
         }
         let graph = content.effect_graph();
         use hanabi_effect_graph::model::{EditValue, ModifierNodeData};
-        let has_timed_sub_emitter = graph.emitters.iter().flat_map(|emitter| &emitter.nodes).any(|node| {
-            matches!(&node.payload, NodePayload::Modifier(ModifierNodeData::Known { type_path, .. })
-                if type_path.ends_with("::TimedSubEmitterModifier"))
-        });
-        let effect_config = graph.emitters.iter().find_map(|emitter| {
-            emitter.nodes.iter().find_map(|node| {
-                let NodePayload::Modifier(ModifierNodeData::Known { type_path, config }) =
-                    &node.payload
-                else {
-                    return None;
-                };
-                let (field, new) = if type_path.ends_with("::TrailRendererModifier") {
-                    match config.get("corner_vertices") {
-                        Some(EditValue::U32(count)) if *count > 0 => {
-                            ("corner_vertices", EditValue::U32(count.saturating_add(2)))
+        let effect_config = graph
+            .emitters
+            .iter()
+            .flat_map(|emitter| {
+                emitter.nodes.iter().filter_map(|node| {
+                    let NodePayload::Modifier(ModifierNodeData::Known { type_path, config }) =
+                        &node.payload
+                    else {
+                        return None;
+                    };
+                    let (field, priority) = match type_path.rsplit("::").next()? {
+                        "TimedSubEmitterModifier" => ("particles_per_second", 0),
+                        "SnowToppedParticleModifier" => ("depth", 0),
+                        "TrailRendererModifier" => ("corner_vertices", 1),
+                        "ParticleLightsModifier" => ("intensity", 1),
+                        _ => return None,
+                    };
+                    let new = match config.get(field)? {
+                        EditValue::U32(count) if *count > 0 => {
+                            EditValue::U32(count.saturating_add(2))
                         }
+                        EditValue::Scalar(Value::Scalar(bevy_hanabi::ScalarValue::Float(
+                            value,
+                        ))) if *value > 0. => EditValue::Scalar((*value * 1.25).into()),
                         _ => return None,
-                    }
-                } else if type_path.ends_with("::TimedSubEmitterModifier") {
-                    match config.get("particles_per_second") {
-                        Some(EditValue::Scalar(Value::Scalar(
-                            bevy_hanabi::ScalarValue::Float(value),
-                        ))) if *value > 0. => (
-                            "particles_per_second",
-                            EditValue::Scalar((*value * 1.25).into()),
-                        ),
-                        _ => return None,
-                    }
-                } else if !has_timed_sub_emitter && type_path.ends_with("::ParticleLightsModifier")
-                {
-                    match config.get("intensity") {
-                        Some(EditValue::Scalar(Value::Scalar(
-                            bevy_hanabi::ScalarValue::Float(value),
-                        ))) if *value > 0. => {
-                            ("intensity", EditValue::Scalar((*value * 1.25).into()))
-                        }
-                        _ => return None,
-                    }
-                } else {
-                    return None;
-                };
-                Some(edits::EditKind::SetModifierConfig {
-                    emitter: emitter.id,
-                    node: node.id,
-                    field: field.into(),
-                    new,
+                    };
+                    Some((
+                        priority,
+                        edits::EditKind::SetModifierConfig {
+                            emitter: emitter.id,
+                            node: node.id,
+                            field: field.into(),
+                            new,
+                        },
+                    ))
                 })
             })
-        });
+            .min_by_key(|(priority, _)| *priority)
+            .map(|(_, edit)| edit);
         if let Some(edit) = effect_config {
             self.edits
                 .write(edits::EditRequest::new(entity, edit.clone()));
