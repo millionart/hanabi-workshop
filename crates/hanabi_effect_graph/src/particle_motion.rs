@@ -453,6 +453,7 @@ impl Modifier for ParticleSnapshotModifier {
                 Attribute::F32X4_1,
                 Attribute::F32X2_2,
                 Attribute::F32_1,
+                Attribute::F32_2,
             ]);
         }
         if self.trail_triangles {
@@ -542,6 +543,7 @@ let alpha_random = source_state_component({texture}, particle_index, 6u);
 particle.f32x2_2 = alpha_random.xy;
 particle.f32x2_1 = vec2<f32>(first.w, second.w);
 particle.f32_1 = alpha_random.z;
+particle.f32_2 = alpha_random.w;
 particle.size3 = vec3<f32>(first_tangent.w, second_tangent.w, 1.0);
 particle.f32_7 = select(-1.0, 1.0, first.w >= 0.0);
 particle.age = 0.0;
