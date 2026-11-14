@@ -40,6 +40,8 @@ pub struct ParticleSpawnEventModifier {
     pub mode: u32,
     pub distance: f32,
     pub probability: f32,
+    #[serde(default)]
+    pub suppress_snapshot: bool,
 }
 
 /// Interpret the child's shape around the parent position already stored in world space.
@@ -98,9 +100,12 @@ pub struct ParticleSnapshotModifier {
     pub flipbook_random: bool,
     #[serde(default)]
     pub mesh_variants: bool,
+    #[serde(default)]
+    pub trail_segments: bool,
 }
 
 pub const PARTICLE_STATE_SLOT: &str = "particle_state";
+pub const TRAIL_STATE_SLOT: &str = "trail_state";
 pub const PARTICLE_STATE_FIELDS: u32 = 7;
 
 pub fn register(registry: &AppTypeRegistry) {
@@ -165,6 +170,7 @@ pub fn register(registry: &AppTypeRegistry) {
             mode: 0,
             distance: 0.1,
             probability: 1.,
+            suppress_snapshot: false,
         })
     });
     register_reflect_modifier::<SubEmitterTransformModifier>(registry, |_| {
@@ -212,6 +218,7 @@ pub fn register(registry: &AppTypeRegistry) {
             use_snapshot: module.lit(0_u32),
             flipbook_random: false,
             mesh_variants: false,
+            trail_segments: false,
         })
     });
 }
@@ -235,7 +242,7 @@ impl Modifier for ParticleSnapshotModifier {
             Attribute::F32X3_2,
             Attribute::HDR_COLOR,
         ];
-        if !self.flipbook_random && !self.mesh_variants {
+        if !self.flipbook_random && !self.mesh_variants && !self.trail_segments {
             return Cow::Borrowed(ATTRIBUTES);
         }
         let mut attributes = ATTRIBUTES.to_vec();
@@ -244,6 +251,16 @@ impl Modifier for ParticleSnapshotModifier {
         }
         if self.mesh_variants {
             attributes.push(Attribute::F32_5);
+        }
+        if self.trail_segments {
+            attributes.extend([
+                Attribute::F32X3_0,
+                Attribute::F32X3_1,
+                Attribute::F32X4_0,
+                Attribute::F32X4_1,
+                Attribute::F32X2_2,
+                Attribute::F32_1,
+            ]);
         }
         Cow::Owned(attributes)
     }
@@ -261,6 +278,10 @@ impl Modifier for ParticleSnapshotModifier {
                 .push_str(include_str!("particle_snapshot.wesl"));
         }
         let texture = format!("material_texture_{}", self.particle_state_slot);
+        if self.trail_segments {
+            context.main_code.push_str(&format!("\nif (({active}) != 0u) {{\nlet first = source_state_component({texture}, particle_index, 0u);\nlet second = source_state_component({texture}, particle_index, 1u);\nlet first_tangent = source_state_component({texture}, particle_index, 2u);\nlet second_tangent = source_state_component({texture}, particle_index, 3u);\nparticle.position = first.xyz;\nparticle.f32x3_0 = second.xyz;\nparticle.f32x3_1 = first_tangent.xyz;\nparticle.f32x3_2 = second_tangent.xyz;\nparticle.f32x4_0 = source_state_component({texture}, particle_index, 4u);\nparticle.f32x4_1 = source_state_component({texture}, particle_index, 5u);\nlet alpha_random = source_state_component({texture}, particle_index, 6u);\nparticle.f32x2_2 = alpha_random.xy;\nparticle.f32_1 = alpha_random.z;\nparticle.size3 = vec3<f32>(first_tangent.w, second_tangent.w, 1.0);\nparticle.f32_7 = select(-1.0, 1.0, first.w >= 0.0);\nparticle.age = 0.0;\nis_alive = true;\n}}\n"));
+            return Ok(());
+        }
         let mut random = String::new();
         if self.flipbook_random || self.mesh_variants {
             random.push_str(&format!(
@@ -410,7 +431,14 @@ impl Modifier for ParticleSpawnEventModifier {
         ModifierContext::Update
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        if self.mode == 1 {
+        if self.mode == 1 && self.suppress_snapshot {
+            Cow::Borrowed(&[
+                Attribute::AGE,
+                Attribute::POSITION,
+                Attribute::F32X3_3,
+                Attribute::F32_7,
+            ])
+        } else if self.mode == 1 {
             Cow::Borrowed(&[Attribute::AGE, Attribute::POSITION, Attribute::F32X3_3])
         } else {
             Cow::Borrowed(&[Attribute::AGE])
@@ -441,7 +469,12 @@ impl Modifier for ParticleSpawnEventModifier {
         } else {
             format!(" && frand() < {:?}", self.probability)
         };
-        context.main_code.push_str(&format!("\nif ({condition}{chance}) {{ {record} append_spawn_events_{}((*effect_metadata).base_child_index, particle_index, {count}); }}\n", self.child_index));
+        let active = if self.suppress_snapshot {
+            " && particle.f32_7 == 0.0"
+        } else {
+            ""
+        };
+        context.main_code.push_str(&format!("\nif ({condition}{chance}{active}) {{ {record} append_spawn_events_{}((*effect_metadata).base_child_index, particle_index, {count}); }}\n", self.child_index));
         Ok(())
     }
 }

@@ -1348,14 +1348,21 @@ pub fn bake_emitter_with_provenance(
     }
 
     let blend = graph.blend.bake(&mut module);
-    let uses_authored_motion = update.iter().any(|modifier| {
+    let uses_trail_snapshot = update.iter().any(|modifier| {
         modifier
             .as_reflect()
-            .is::<crate::particle_motion::VelocityOverLifetimeModifier>()
-            || modifier
-                .as_reflect()
-                .is::<crate::particle_motion::IntegrateMotionModifier>()
+            .downcast_ref::<crate::particle_motion::ParticleSnapshotModifier>()
+            .is_some_and(|snapshot| snapshot.trail_segments)
     });
+    let uses_authored_motion = uses_trail_snapshot
+        || update.iter().any(|modifier| {
+            modifier
+                .as_reflect()
+                .is::<crate::particle_motion::VelocityOverLifetimeModifier>()
+                || modifier
+                    .as_reflect()
+                    .is::<crate::particle_motion::IntegrateMotionModifier>()
+        });
     let mut asset = EffectAsset::new(graph.capacity, spawner, module).with_alpha_mode(blend);
     if uses_authored_motion {
         asset.motion_integration = bevy_hanabi::MotionIntegration::None;

@@ -5,8 +5,8 @@ use bevy::{
     prelude::{AppTypeRegistry, Reflect},
 };
 use bevy_hanabi::{
-    Attribute, BoxedModifier, ExprError, Modifier, ModifierContext, Module, RenderContext,
-    RenderModifier, ShaderWriter, register_reflect_modifier,
+    Attribute, BoxedModifier, ExprError, ExprHandle, Modifier, ModifierContext, Module,
+    RenderContext, RenderModifier, ShaderWriter, register_reflect_modifier,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +123,15 @@ impl Default for CloudRemapModifier {
 
 pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<CloudRemapModifier>();
+    registry.write().register::<TrailSegmentModifier>();
+    register_reflect_modifier::<TrailSegmentModifier>(registry, |module| {
+        Box::new(TrailSegmentModifier {
+            width: module.lit(1_f32),
+            color: module.lit(Vec4::ONE),
+            first_width: module.lit(1_f32),
+            first_color: module.lit(Vec4::ONE),
+        })
+    });
     registry.write().register::<BillboardGeometryModifier>();
     registry.write().register::<ParticleDistortionModifier>();
     registry.write().register::<DamageNumberModifier>();
@@ -173,6 +182,77 @@ pub fn register(registry: &AppTypeRegistry) {
             mode: 0,
         })
     });
+}
+
+/// Expand an original adjacent trail-point pair into a camera-facing segment.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct TrailSegmentModifier {
+    pub width: ExprHandle,
+    pub color: ExprHandle,
+    pub first_width: ExprHandle,
+    pub first_color: ExprHandle,
+}
+
+impl Modifier for TrailSegmentModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Render
+    }
+    fn as_render(&self) -> Option<&dyn RenderModifier> {
+        Some(self)
+    }
+    fn as_render_mut(&mut self) -> Option<&mut dyn RenderModifier> {
+        Some(self)
+    }
+    fn into_boxed_render(self: Box<Self>) -> Option<Box<dyn RenderModifier>> {
+        Some(self)
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[
+            Attribute::POSITION,
+            Attribute::SIZE3,
+            Attribute::F32X3_0,
+            Attribute::F32X3_1,
+            Attribute::F32X3_2,
+            Attribute::F32X4_0,
+            Attribute::F32X4_1,
+            Attribute::F32X2_2,
+            Attribute::F32_7,
+        ])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        Err(ExprError::InvalidModifierContext(
+            bevy_hanabi::EvalContext::modifier_context(context),
+            ModifierContext::Render,
+            "Trail geometry is a vertex modifier.",
+        ))
+    }
+}
+
+impl RenderModifier for TrailSegmentModifier {
+    fn apply_render(
+        &self,
+        module: &mut Module,
+        context: &mut RenderContext,
+    ) -> Result<(), ExprError> {
+        use bevy_hanabi::EvalContext;
+        context.set_needs_normal();
+        context.set_needs_uv();
+        let width = context.eval(module, self.width)?;
+        let color = context.eval(module, self.color)?;
+        let first_width = context.eval(module, self.first_width)?;
+        let first_color = context.eval(module, self.first_color)?;
+        context.vertex_code.push_str(&format!("\nif particle.f32_7 > 0.0 {{\n    let endpoint = vertex_uv.x;\n    let center = mix(particle.position, particle.f32x3_0, endpoint);\n    let tangent = mix(particle.f32x3_1, particle.f32x3_2, endpoint);\n    let camera = view.world_position - center;\n    let side_vector = cross(tangent, camera);\n    let side_length = length(side_vector);\n    let side = select(vec3<f32>(1.0, 0.0, 0.0), side_vector / max(side_length, 1e-6), side_length > 1e-6);\n    let width = mix(particle.size3.x * ({first_width}), particle.size3.y * ({width}), endpoint);\n    out.position = view.clip_from_world * vec4<f32>(center + side * (vertex_uv.y - 0.5) * width, 1.0);\n    out.normal = select(vec3<f32>(0.0, 1.0, 0.0), camera / max(length(camera), 1e-6), length(camera) > 1e-6);\n    out.uv = vec2<f32>(mix(particle.f32x4_0.w, particle.f32x4_1.w, endpoint), vertex_uv.y);\n    let first = vec4<f32>(particle.f32x4_0.xyz, particle.f32x2_2.x) * ({first_color});\n    let second = vec4<f32>(particle.f32x4_1.xyz, particle.f32x2_2.y) * ({color});\n    out.color = mix(first, second, endpoint);\n    return out;\n}}\nif particle.f32_7 < 0.0 {{\n    out.position = vec4<f32>(0.0);\n    out.uv = vec2<f32>(0.0);\n    out.color = vec4<f32>(0.0);\n    out.normal = vec3<f32>(0.0);\n    return out;\n}}\n"));
+        Ok(())
+    }
+    fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
+        Box::new(*self)
+    }
+    fn as_modifier(&self) -> &dyn Modifier {
+        self
+    }
 }
 
 /// Legacy alpha, additive, soft additive and premultiplied particle shaders.
