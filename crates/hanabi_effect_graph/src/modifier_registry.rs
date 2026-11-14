@@ -130,6 +130,7 @@ impl Plugin for ModifierRegistryPlugin {
     fn build(&self, app: &mut App) {
         register_modifiers(app.world().resource::<AppTypeRegistry>());
         crate::particle_material::register(app.world().resource::<AppTypeRegistry>());
+        crate::particle_motion::register(app.world().resource::<AppTypeRegistry>());
         register_builtin_overwrites(app);
     }
 }

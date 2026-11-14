@@ -1338,7 +1338,15 @@ pub fn bake_emitter_with_provenance(
     }
 
     let blend = graph.blend.bake(&mut module);
+    let uses_authored_motion = update.iter().any(|modifier| {
+        modifier
+            .as_reflect()
+            .is::<crate::particle_motion::VelocityOverLifetimeModifier>()
+    });
     let mut asset = EffectAsset::new(graph.capacity, spawner, module).with_alpha_mode(blend);
+    if uses_authored_motion {
+        asset.motion_integration = bevy_hanabi::MotionIntegration::None;
+    }
     asset.name = graph.name.to_string();
     asset.simulation_space = graph.simulation_space;
     asset.simulation_condition = graph.simulation_condition;
