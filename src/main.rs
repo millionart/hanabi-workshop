@@ -278,6 +278,16 @@ impl Roundtrip<'_, '_> {
                         }
                         _ => return None,
                     }
+                } else if type_path.ends_with("::TimedSubEmitterModifier") {
+                    match config.get("particles_per_second") {
+                        Some(EditValue::Scalar(Value::Scalar(
+                            bevy_hanabi::ScalarValue::Float(value),
+                        ))) if *value > 0. => (
+                            "particles_per_second",
+                            EditValue::Scalar((*value * 1.25).into()),
+                        ),
+                        _ => return None,
+                    }
                 } else if type_path.ends_with("::ParticleLightsModifier") {
                     match config.get("intensity") {
                         Some(EditValue::Scalar(Value::Scalar(

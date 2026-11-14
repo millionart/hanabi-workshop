@@ -44,6 +44,18 @@ pub struct ParticleSpawnEventModifier {
     pub suppress_snapshot: bool,
 }
 
+/// Emit from each parent particle at a constant rate after its own start delay.
+#[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
+pub struct TimedSubEmitterModifier {
+    pub particles_per_second: f32,
+    pub start_delay_min: f32,
+    pub start_delay_max: f32,
+    pub duration: f32,
+    pub looping: bool,
+    pub probability: f32,
+    pub child_index: u32,
+}
+
 /// Interpret the child's shape around the parent position already stored in world space.
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct SubEmitterTransformModifier;
@@ -186,6 +198,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<WorldAccelerationModifier>();
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
+    registry.write().register::<TimedSubEmitterModifier>();
     registry.write().register::<SubEmitterTransformModifier>();
     registry.write().register::<EmissionShapeModifier>();
     registry.write().register::<SimulationStepModifier>();
@@ -259,6 +272,17 @@ pub fn register(registry: &AppTypeRegistry) {
             distance: 0.1,
             probability: 1.,
             suppress_snapshot: false,
+        })
+    });
+    register_reflect_modifier::<TimedSubEmitterModifier>(registry, |_| {
+        Box::new(TimedSubEmitterModifier {
+            particles_per_second: 10.,
+            start_delay_min: 0.,
+            start_delay_max: 0.,
+            duration: 1.,
+            looping: false,
+            probability: 1.,
+            child_index: 0,
         })
     });
     register_reflect_modifier::<SubEmitterTransformModifier>(registry, |_| {
@@ -698,6 +722,63 @@ impl Modifier for ParticleSpawnEventModifier {
             ""
         };
         context.main_code.push_str(&format!("\nif ({condition}{chance}{active}) {{ {record} append_spawn_events_{}((*effect_metadata).base_child_index, particle_index, {count}); }}\n", self.child_index));
+        Ok(())
+    }
+}
+
+impl Modifier for TimedSubEmitterModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::AGE, Attribute::LIFETIME, Attribute::U32_1])
+    }
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        context.set_emits_gpu_spawn_events(true)?;
+        if !context.extra_code.contains("fn sub_emitter_random(") {
+            // UnityPlayer's first draw from the particle seed plus the caller's salt.
+            context.extra_code.push_str(
+                r#"
+fn sub_emitter_random(x: u32) -> f32 {
+    let w = x * 0x6ab51b9du + 0x714acb3fu;
+    let t = x ^ (x << 11u);
+    let value = w ^ (w >> 19u) ^ t ^ (t >> 8u);
+    return f32(value & 0x7fffffu) * bitcast<f32>(0x34000001u);
+}
+"#,
+            );
+        }
+        let dt = simulation_delta(context);
+        let duration = if self.looping {
+            "particle.lifetime".into()
+        } else {
+            format!("{:?}", self.duration.max(0.))
+        };
+        // shortcut: Hanabi's birth identity stands in for Unity's particle seed until the spawn seeds are shared.
+        // shortcut: use the current parent position until GPU events can carry per-birth interpolated data.
+        context.main_code.push_str(&format!(
+            r#"
+if (was_alive && {dt} > 0.0 && {probability:?} > 0.0) {{
+    let parent_seed = pcg_hash(particle.u32_1 ^ (*spawner).seed);
+    if (sub_emitter_random(parent_seed + 0x5aa47f98u) <= {probability:?}) {{
+        let delay = mix({delay_min:?}, {delay_max:?}, sub_emitter_random(parent_seed + 0x34bfa39au));
+        let elapsed = min(particle.age, particle.lifetime) - delay;
+        let previous = clamp(particle.age - {dt} - delay, 0.0, {duration});
+        let current = clamp(elapsed, previous, {duration});
+        let count = u32(floor(current * {rate:?}) - floor(previous * {rate:?}));
+        append_spawn_events_{child}((*effect_metadata).base_child_index, particle_index, count);
+    }}
+}}
+"#,
+            probability = self.probability.clamp(0., 1.),
+            delay_min = self.start_delay_min.max(0.),
+            delay_max = self.start_delay_max.max(0.),
+            rate = self.particles_per_second.max(0.),
+            child = self.child_index,
+        ));
         Ok(())
     }
 }
