@@ -89,6 +89,7 @@ pub fn register(registry: &AppTypeRegistry) {
             separate_size_axes: false,
             velocity_addition: false,
             size_from_lifetime: false,
+            rotation_3d: false,
         })
     });
     register_reflect_modifier::<ParticleSpawnEventModifier>(registry, |module| {
@@ -266,6 +267,8 @@ pub struct CurlNoiseModifier {
     pub velocity_addition: bool,
     #[serde(default)]
     pub size_from_lifetime: bool,
+    #[serde(default)]
+    pub rotation_3d: bool,
 }
 
 impl Modifier for CurlNoiseModifier {
@@ -282,6 +285,9 @@ impl Modifier for CurlNoiseModifier {
         ];
         if self.velocity_addition {
             attributes.push(Attribute::F32X3_1);
+        }
+        if self.rotation_3d {
+            attributes.push(Attribute::F32X2_0);
         }
         Cow::Owned(attributes)
     }
@@ -321,10 +327,15 @@ impl Modifier for CurlNoiseModifier {
         } else {
             "vec3<f32>(scale_factor.x)"
         };
+        let pitch_yaw = if self.rotation_3d {
+            "particle.f32x2_0 += angular.xy;"
+        } else {
+            ""
+        };
         context.main_code.push_str(&format!(
             "\n{{\nlet p = particle.position * vec3<f32>(1.0, 1.0, -1.0) + ({seed_offset}) * 100.0;\n\
              let curl = unity_curl(p, sim_params.time * ({scroll}), {frequency:?}, {}u, {}u, {:?}, {:?}) * ({strength}) * {scale:?};\n\
-             {use_motion}\nparticle.f32_0 += curl.z * ({rotation}) * (0.008726646 * sim_params.delta_time);\n\
+             {use_motion}\nlet angular = curl * ({rotation}) * (0.008726646 * sim_params.delta_time);\nparticle.f32_0 += angular.z;\n{pitch_yaw}\n\
              let scale_factor = max(vec3<f32>(0.0), vec3<f32>(1.0) + curl * (0.5 * ({size})));\n\
              particle.size3 {} {size_value};\n}}\n",
             self.quality, self.octaves, self.octave_multiplier, self.octave_scale, if self.size_from_lifetime { "*=" } else { "= particle.f32x3_0 *" },

@@ -453,6 +453,12 @@ pub struct BillboardGeometryModifier {
     pub velocity_scale: f32,
     pub pivot: bevy::math::Vec3,
     pub local_particles: bool,
+    #[serde(default = "default_render_alignment")]
+    pub render_alignment: u32,
+}
+
+fn default_render_alignment() -> u32 {
+    u32::MAX
 }
 
 impl Default for BillboardGeometryModifier {
@@ -465,6 +471,7 @@ impl Default for BillboardGeometryModifier {
             velocity_scale: 0.,
             pivot: bevy::math::Vec3::ZERO,
             local_particles: true,
+            render_alignment: default_render_alignment(),
         }
     }
 }
@@ -488,6 +495,7 @@ impl Modifier for BillboardGeometryModifier {
             Attribute::SIZE3,
             Attribute::VELOCITY,
             Attribute::F32_0,
+            Attribute::F32X2_0,
             Attribute::F32X3_2,
         ])
     }
@@ -514,7 +522,7 @@ impl RenderModifier for BillboardGeometryModifier {
                  axis_y = aim;\naxis_z = cross(axis_x, axis_y);\nsize.y = size.y * {:?} + vel * {:?};\n",
                 self.length_scale, self.velocity_scale,
             ));
-        } else {
+        } else if self.orientation <= 3 {
             let scaling = if self.local_particles {
                 "max(length(unpack_compressed_transform(spawners[spawner_index].transform)[0].xyz), 1e-5)"
             } else {
@@ -538,14 +546,52 @@ impl RenderModifier for BillboardGeometryModifier {
                 3 => code.push_str("let camera = get_camera_position_effect_space();\nlet normal = (camera - position) * vec3<f32>(1.0,0.0,1.0);\naxis_z = select(vec3<f32>(0.0,0.0,1.0), normal / max(length(normal), 1e-6), length(normal) > 1e-6);\naxis_y = vec3<f32>(0.0,1.0,0.0);\naxis_x = cross(axis_y, axis_z);\n"),
                 _ => {}
             }
-            if self.orientation == 2 || self.orientation == 3 {
+            if (self.orientation == 2 || self.orientation == 3) && self.render_alignment == u32::MAX
+            {
                 code.push_str("let roll = -particle.f32_0;\nlet axes = mat2x2<f32>(cos(roll), sin(roll), -sin(roll), cos(roll));\nlet first = axis_x * axes[0].x + axis_y * axes[0].y;\naxis_y = axis_x * axes[1].x + axis_y * axes[1].y;\naxis_x = first;\n");
             }
         }
-        code.push_str(&format!(
-            "let pivot = vec3<f32>({:?}, {:?}, {:?}) * size;\nposition += axis_x * pivot.x + axis_y * pivot.y + axis_z * pivot.z;\nsize *= particle.f32x3_2;\n}}\n",
-            self.pivot.x, self.pivot.y, self.pivot.z,
-        ));
+        if self.render_alignment != u32::MAX && self.orientation != 1 {
+            let alignment = self.render_alignment;
+            if matches!(self.orientation, 0 | 4) {
+                let basis = match alignment {
+                    0 => "get_camera_rotation_effect_space()",
+                    1 if self.local_particles => {
+                        "unpack_compressed_transform_3x3_transpose(spawners[spawner_index].inverse_transform)"
+                    }
+                    2 if !self.local_particles => {
+                        "transpose(unpack_compressed_transform_3x3_transpose(spawners[spawner_index].transform))"
+                    }
+                    3 | 4 => {
+                        let facing = if alignment == 3 {
+                            "get_camera_position_effect_space() - position"
+                        } else {
+                            "-particle.velocity"
+                        };
+                        code.push_str(&format!("let direction = {facing};\nlet camera_axes = get_camera_rotation_effect_space();\nlet forward = select(camera_axes[2], direction / max(length(direction), 1e-6), length(direction) > 1e-6);\nlet side = cross(camera_axes[1], forward);\nlet right = select(camera_axes[0], side / max(length(side), 1e-6), length(side) > 1e-6);\n"));
+                        "mat3x3<f32>(right, cross(forward, right), forward)"
+                    }
+                    _ => "mat3x3<f32>(axis_x, axis_y, axis_z)",
+                };
+                code.push_str(&format!("let basis = {basis};\n"));
+            } else {
+                code.push_str("let basis = mat3x3<f32>(axis_x, axis_y, axis_z);\n");
+            }
+            let rotation = match (self.orientation, alignment) {
+                (2 | 3, _) => "vec3<f32>(0.0, 0.0, -particle.f32_0)",
+                (0, 0) => "-vec3<f32>(particle.f32x2_0, particle.f32_0)",
+                (0, _) => "vec3<f32>(particle.f32x2_0, -particle.f32_0)",
+                _ => "vec3<f32>(-particle.f32x2_0, particle.f32_0)",
+            };
+            code.push_str(&format!("let angle = {rotation};\nlet s = sin(angle);\nlet c = cos(angle);\nlet rx = mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, c.x, s.x), vec3<f32>(0.0, -s.x, c.x));\nlet ry = mat3x3<f32>(vec3<f32>(c.y, 0.0, -s.y), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(s.y, 0.0, c.y));\nlet rz = mat3x3<f32>(vec3<f32>(c.z, s.z, 0.0), vec3<f32>(-s.z, c.z, 0.0), vec3<f32>(0.0, 0.0, 1.0));\nlet rotated = basis * ry * rx * rz;\naxis_x = rotated[0];\naxis_y = rotated[1];\naxis_z = rotated[2];\n"));
+        }
+        if self.orientation < 4 {
+            code.push_str(&format!(
+                "let pivot = vec3<f32>({:?}, {:?}, {:?}) * size;\nposition += axis_x * pivot.x + axis_y * pivot.y + axis_z * pivot.z;\nsize *= particle.f32x3_2;\n",
+                self.pivot.x, self.pivot.y, self.pivot.z,
+            ));
+        }
+        code.push_str("}\n");
         context.vertex_code.push_str(&code);
         Ok(())
     }
