@@ -27,10 +27,9 @@ use bevy::{
     reflect::{Reflect, TypeRegistry},
 };
 use bevy_hanabi::{
-    Attribute, EmitSpawnEventModifier, EventEmitCondition, ModifierContext, ReflectModifier,
-    SetAttributeModifier, SetPositionCircleModifier, SetPositionCone3dModifier,
-    SetPositionSphereModifier, SetVelocityCircleModifier, SetVelocitySphereModifier,
-    SetVelocityTangentModifier, register_modifiers, register_reflect_modifier,
+    Attribute, ModifierContext, ReflectModifier, SetAttributeModifier, SetPositionCircleModifier,
+    SetPositionCone3dModifier, SetPositionSphereModifier, SetVelocityCircleModifier,
+    SetVelocitySphereModifier, SetVelocityTangentModifier, register_modifiers,
 };
 
 use crate::ModifierGroup;
@@ -130,32 +129,9 @@ pub struct ModifierRegistryPlugin;
 impl Plugin for ModifierRegistryPlugin {
     fn build(&self, app: &mut App) {
         register_modifiers(app.world().resource::<AppTypeRegistry>());
-        register_missing_modifiers(app.world().resource::<AppTypeRegistry>());
+        crate::particle_material::register(app.world().resource::<AppTypeRegistry>());
         register_builtin_overwrites(app);
     }
-}
-
-/// Registers modifier types upstream's [`register_modifiers`] omits.
-///
-/// [`EmitSpawnEventModifier`] drives our GPU source-context / event-link
-/// topology (see `bake::bake_modifier`'s `child_index` override) but isn't
-/// covered by `bevy_hanabi`'s own registration function, so we register it
-/// here ourselves via the same public [`register_reflect_modifier`] API
-/// upstream uses internally.
-fn register_missing_modifiers(type_registry: &AppTypeRegistry) {
-    // `register_reflect_modifier` only attaches `ReflectModifier` type data to
-    // an *already*-registered type (it looks the type up and warns instead of
-    // registering it if missing), unlike upstream's own `register_modifiers`
-    // which registers each type first. Mirror that here.
-    type_registry.write().register::<EmitSpawnEventModifier>();
-    register_reflect_modifier::<EmitSpawnEventModifier>(type_registry, |module| {
-        let count = module.lit(1u32);
-        Box::new(EmitSpawnEventModifier {
-            condition: EventEmitCondition::Always,
-            count,
-            child_index: 0,
-        })
-    });
 }
 
 /// Attach [`ModifierOverwrites`] data to built-in fully-overwriting modifiers.

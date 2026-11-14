@@ -27,6 +27,7 @@ pub mod model;
 pub mod modifier_names;
 pub mod modifier_ops;
 pub mod modifier_registry;
+pub mod particle_material;
 pub mod processor;
 pub mod schema;
 pub mod validation;
