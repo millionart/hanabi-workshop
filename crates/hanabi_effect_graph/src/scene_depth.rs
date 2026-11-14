@@ -1,22 +1,25 @@
 //! Exposes Bevy's scene depth as a Hanabi image slot for transparent effects.
 
 use bevy::{
-    asset::{AssetEventSystems, AssetId, RenderAssetUsages},
+    asset::{AssetEvent, AssetEventSystems, AssetId, RenderAssetUsages},
     camera::CameraUpdateSystems,
     core_pipeline::{
         Core3dSystems, FullscreenShader,
-        core_3d::{AlphaMask3d, Opaque3d, main_opaque_pass_3d, main_transparent_pass_3d},
+        core_3d::{
+            AlphaMask3d, Opaque3d, Transparent3d, TransparentSortingInfo3d, main_opaque_pass_3d,
+            main_transparent_pass_3d,
+        },
         prepass::ViewPrepassTextures,
         schedule::Core3d,
     },
     image::ImageSampler,
     prelude::*,
     render::{
-        Render, RenderApp, RenderStartup, RenderSystems,
+        Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems,
         extract_component::{ExtractComponent, ExtractComponentPlugin},
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
-        render_phase::ViewBinnedRenderPhases,
+        render_phase::{ViewBinnedRenderPhases, ViewSortedRenderPhases, sort_phase_system},
         render_resource::{
             binding_types::{texture_2d, texture_2d_multisampled},
             *,
@@ -54,6 +57,15 @@ impl Plugin for SceneDepthPlugin {
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
+        render
+            .init_resource::<SurfacePipelines>()
+            .add_systems(ExtractSchedule, extract_surface_options)
+            .add_systems(
+                Render,
+                specialize_surface_pipelines
+                    .in_set(RenderSystems::PhaseSort)
+                    .before(sort_phase_system::<Transparent3d>),
+            );
         render.add_systems(
             Render,
             clear_hanabi_bins
@@ -113,6 +125,112 @@ impl Plugin for SceneDepthPlugin {
         let handle = app.world_mut().resource_mut::<Assets<Shader>>().add(shader);
         app.sub_app_mut(RenderApp)
             .insert_resource(DepthShader(handle));
+    }
+}
+
+#[derive(Default, Resource)]
+struct SurfacePipelines {
+    options: bevy::platform::collections::HashMap<AssetId<Shader>, SurfaceOption>,
+    pipelines: bevy::platform::collections::HashMap<CachedRenderPipelineId, CachedRenderPipelineId>,
+}
+
+#[derive(Clone, Copy)]
+enum SurfaceOption {
+    SoftAdditive,
+    DamageNumber,
+}
+
+fn extract_surface_options(
+    mut events: Extract<MessageReader<AssetEvent<Shader>>>,
+    shaders: Extract<Res<Assets<Shader>>>,
+    mut options: ResMut<SurfacePipelines>,
+) {
+    for event in events.read() {
+        let id = match *event {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } => id,
+            AssetEvent::Removed { id } => {
+                options.options.remove(&id);
+                continue;
+            }
+            _ => continue,
+        };
+        let Some(shader) = shaders
+            .get(id)
+            .filter(|shader| shader.path.starts_with("hanabi/"))
+        else {
+            continue;
+        };
+        let source = shader.source.as_str();
+        let option = if source.contains("// hanabi_workshop: soft_additive") {
+            SurfaceOption::SoftAdditive
+        } else if source.contains("// hanabi_workshop: damage_number_depth") {
+            SurfaceOption::DamageNumber
+        } else {
+            continue;
+        };
+        options.options.insert(id, option);
+    }
+}
+
+fn specialize_surface_pipelines(
+    mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
+    cache: Res<PipelineCache>,
+    mut options: ResMut<SurfacePipelines>,
+) {
+    for phase in phases.values_mut() {
+        for item in phase.items.values_mut() {
+            if matches!(
+                cache.get_render_pipeline_state(item.pipeline),
+                CachedPipelineState::Queued
+            ) {
+                continue;
+            }
+            let descriptor = cache.get_render_pipeline_descriptor(item.pipeline);
+            let Some(fragment) = &descriptor.fragment else {
+                continue;
+            };
+            let Some(&style) = options.options.get(&fragment.shader.id()) else {
+                continue;
+            };
+            let new = *options.pipelines.entry(item.pipeline).or_insert_with(|| {
+                let mut descriptor = descriptor.clone();
+                for target in descriptor
+                    .fragment
+                    .as_mut()
+                    .unwrap()
+                    .targets
+                    .iter_mut()
+                    .flatten()
+                {
+                    target.write_mask = ColorWrites::RED | ColorWrites::GREEN | ColorWrites::BLUE;
+                    if matches!(style, SurfaceOption::SoftAdditive) {
+                        target.blend = Some(BlendState {
+                            color: BlendComponent {
+                                src_factor: BlendFactor::One,
+                                dst_factor: BlendFactor::OneMinusSrc,
+                                operation: BlendOperation::Add,
+                            },
+                            alpha: BlendComponent::OVER,
+                        });
+                    }
+                }
+                if matches!(style, SurfaceOption::DamageNumber)
+                    && let Some(depth) = &mut descriptor.depth_stencil
+                {
+                    depth.depth_compare = Some(CompareFunction::Always);
+                    depth.depth_write_enabled = Some(false);
+                }
+                cache.queue_render_pipeline(descriptor)
+            });
+            item.pipeline = new;
+            if matches!(style, SurfaceOption::DamageNumber) {
+                if let TransparentSortingInfo3d::Sorted { depth_bias, .. } = &mut item.sorting_info
+                {
+                    *depth_bias += 100_000.;
+                }
+                item.distance += 100_000.;
+            }
+        }
     }
 }
 

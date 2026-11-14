@@ -212,7 +212,7 @@ impl RenderModifier for LegacyParticleModifier {
         let [r, g, b, a] = self.tint.to_array();
         match self.mode {
             1 => code.push_str(&format!("color *= 2.0 * texel * vec4<f32>({r:?},{g:?},{b:?},{a:?});\ncolor.a = clamp(color.a * fade, 0.0, 1.0);\n")),
-            2 => code.push_str("color *= texel;\ncolor.a *= fade;\n"),
+            2 => code.push_str("// hanabi_workshop: soft_additive\ncolor *= texel;\ncolor.a *= fade;\ncolor = vec4<f32>(color.rgb * color.a, color.a);\n"),
             3 => code.push_str("color.a *= fade;\ncolor = texel * color * color.a;\n"),
             _ => code.push_str(&format!("color *= texel * vec4<f32>({r:?},{g:?},{b:?},{a:?});\n")),
         }
@@ -672,7 +672,7 @@ impl RenderModifier for DamageNumberModifier {
         } else {
             "false"
         };
-        context.fragment_code.push_str(&format!("\n{{\nlet st = {transform};\nlet coords = uv * st.xy + st.zw;\nif (coords.x > 1.0) {{ discard; }}\nlet glyph = select(vec2<f32>(1234.0, 0.0), particle.f32x2_1, {uses_snapshot});\nlet atlas = number_atlas_uv(coords, glyph.x, {:?});\nlet texel = textureSample(material_texture_{slot}, material_sampler_{slot}, atlas);\nlet edge = (1.0 - texel.r) * clamp(glyph.y, 0.0, 1.0) * texel.a;\ncolor *= mix(texel, {critical}, edge) * {tint};\n}}\n", self.character_limit, slot = self.atlas_slot));
+        context.fragment_code.push_str(&format!("\n{{\n// hanabi_workshop: damage_number_depth\nlet st = {transform};\nlet coords = uv * st.xy + st.zw;\nif (coords.x > 1.0) {{ discard; }}\nlet glyph = select(vec2<f32>(1234.0, 0.0), particle.f32x2_1, {uses_snapshot});\nlet atlas = number_atlas_uv(coords, glyph.x, {:?});\nlet texel = textureSample(material_texture_{slot}, material_sampler_{slot}, atlas);\nlet edge = (1.0 - texel.r) * clamp(glyph.y, 0.0, 1.0) * texel.a;\ncolor *= mix(texel, {critical}, edge) * {tint};\n}}\n", self.character_limit, slot = self.atlas_slot));
         Ok(())
     }
     fn boxed_render_clone(&self) -> Box<dyn RenderModifier> {
