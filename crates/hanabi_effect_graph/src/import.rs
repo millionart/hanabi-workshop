@@ -42,9 +42,9 @@ use bevy_hanabi::{
 use crate::{
     ModifierGroup,
     model::{
-        EditValue, EffectGraph, EmitterGraph, EmitterId, ExprNode, GradientVec3, GradientVec4,
-        GraphLink, GraphNode, GraphStack, ImageBinding, InputSlot, ModifierNodeData, NodeId,
-        NodePayload, PortRef, PropertyDef, PropertyId, SharedStr, SlotId, SourceContext,
+        BlendMode, EditValue, EffectGraph, EmitterGraph, EmitterId, ExprNode, GradientVec3,
+        GradientVec4, GraphLink, GraphNode, GraphStack, ImageBinding, InputSlot, ModifierNodeData,
+        NodeId, NodePayload, PortRef, PropertyDef, PropertyId, SharedStr, SlotId, SourceContext,
         SourceKind, SourceLink, StackId, TextureSlotDef,
     },
     schema::{ConfigKind, FieldRole, OUTPUT_PORT, modifier_schema},
@@ -163,7 +163,30 @@ fn build_imported_emitter(
         simulation_space: asset.simulation_space,
         simulation_condition: asset.simulation_condition,
         z_layer_2d: asset.z_layer_2d,
+        mesh: asset.mesh.clone(),
         ..EmitterGraph::empty(id)
+    };
+    let mut blend_warning = None;
+    use bevy_hanabi::{AlphaMode, ScalarValue};
+    graph.blend = match asset.alpha_mode {
+        AlphaMode::Premultiply => BlendMode::Premultiply,
+        AlphaMode::Add => BlendMode::Add,
+        AlphaMode::Multiply => BlendMode::Multiply,
+        AlphaMode::Mask(handle) => match module.get(handle) {
+            Some(Expr::Literal(literal))
+                if matches!(literal.value, Value::Scalar(ScalarValue::Float(_))) =>
+            {
+                BlendMode::Mask(literal.value.as_scalar().as_f32())
+            }
+            _ => {
+                blend_warning = Some(ImportWarning::new(
+                    "non-literal alpha cutoff replaced with 0.5",
+                ));
+                BlendMode::Mask(0.5)
+            }
+        },
+        AlphaMode::Opaque => BlendMode::Opaque,
+        _ => BlendMode::Blend,
     };
 
     // Runtime properties become exposed edit properties. Index by name so a
@@ -203,7 +226,7 @@ fn build_imported_emitter(
         props_by_name: &props_by_name,
         prop_ref_nodes: HashMap::new(),
         slot_ids,
-        warnings: Vec::new(),
+        warnings: blend_warning.into_iter().collect(),
         next_id,
     };
 

@@ -17,7 +17,7 @@ use bevy::{
     reflect::TypePath,
 };
 use bevy_hanabi::{
-    Attribute, BuiltInOperator, CpuValue, Gradient, ScalarType, SimulationCondition,
+    AlphaMode, Attribute, BuiltInOperator, CpuValue, Gradient, ScalarType, SimulationCondition,
     SimulationSpace, SlotDimension, SpawnerSettings, Value, ValueType, VectorType,
     graph::expr::{BinaryOperator, TernaryOperator, UnaryOperator},
 };
@@ -777,6 +777,48 @@ pub struct PropertyDef {
     pub exposed: bool,
 }
 
+/// The drawable surface blending of an emitter preview and its baked asset.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub enum BlendMode {
+    #[default]
+    Blend,
+    Premultiply,
+    Add,
+    Multiply,
+    Mask(f32),
+    Opaque,
+}
+
+impl BlendMode {
+    pub(crate) fn bake(self, module: &mut bevy_hanabi::Module) -> AlphaMode {
+        match self {
+            Self::Blend => AlphaMode::Blend,
+            Self::Premultiply => AlphaMode::Premultiply,
+            Self::Add => AlphaMode::Add,
+            Self::Multiply => AlphaMode::Multiply,
+            Self::Mask(threshold) => AlphaMode::Mask(module.lit(threshold)),
+            Self::Opaque => AlphaMode::Opaque,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EmitterPose {
+    pub translation: Vec3,
+    pub rotation: bevy::math::Quat,
+    pub scale: Vec3,
+}
+
+impl Default for EmitterPose {
+    fn default() -> Self {
+        Self {
+            translation: Vec3::ZERO,
+            rotation: bevy::math::Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }
+    }
+}
+
 /// One self-contained emitter pipeline and its settings.
 ///
 /// Owns its full emitter state — name, capacity, simulation settings,
@@ -796,6 +838,9 @@ pub struct EmitterGraph {
     pub simulation_space: SimulationSpace,
     pub simulation_condition: SimulationCondition,
     pub z_layer_2d: f32,
+    pub blend: BlendMode,
+    pub mesh: Option<AssetPath<'static>>,
+    pub pose: EmitterPose,
     pub properties: Vec<PropertyDef>,
     /// Host-supplied texture slots, ordered by sampling index.
     ///
@@ -825,6 +870,9 @@ impl EmitterGraph {
             simulation_space: SimulationSpace::default(),
             simulation_condition: SimulationCondition::default(),
             z_layer_2d: 0.0,
+            blend: BlendMode::default(),
+            mesh: None,
+            pose: EmitterPose::default(),
             properties: Vec::new(),
             texture_slots: Vec::new(),
             nodes: Vec::new(),
@@ -849,6 +897,12 @@ struct EmitterGraphData {
     simulation_condition: Option<SimulationCondition>,
     #[serde(default, deserialize_with = "deserialize_present")]
     z_layer_2d: Option<f32>,
+    #[serde(default)]
+    blend: BlendMode,
+    #[serde(default)]
+    mesh: Option<AssetPath<'static>>,
+    #[serde(default)]
+    pose: EmitterPose,
     properties: Vec<PropertyDef>,
     #[serde(default)]
     texture_slots: Vec<TextureSlotDef>,
@@ -904,6 +958,9 @@ impl<'de> Deserialize<'de> for EmitterGraph {
                 .z_layer_2d
                 .or_else(|| header.map(|h| h.z_layer_2d))
                 .ok_or_else(|| D::Error::missing_field("z_layer_2d"))?,
+            blend: data.blend,
+            mesh: data.mesh,
+            pose: data.pose,
             properties: data.properties,
             texture_slots: data.texture_slots,
             nodes: data.nodes,
@@ -1377,6 +1434,12 @@ mod tests {
             simulation_space: SimulationSpace::Local,
             simulation_condition: SimulationCondition::WhenVisible,
             z_layer_2d: 0.0,
+            blend: BlendMode::Add,
+            mesh: Some(AssetPath::parse("meshes/example.glb#Mesh0/Primitive0").into_owned()),
+            pose: EmitterPose {
+                translation: Vec3::X,
+                ..Default::default()
+            },
             properties: vec![
                 PropertyDef {
                     id: speed,

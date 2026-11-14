@@ -24,7 +24,7 @@ use bevy_hanabi::{EffectAsset, SimulationCondition, SimulationSpace};
 use super::collapsing;
 use crate::{
     edits::{EditKind, EditRequest},
-    effect_graph::model::{EffectGraph, EmitterGraph, EmitterId},
+    effect_graph::model::{BlendMode, EffectGraph, EmitterGraph, EmitterId},
 };
 
 pub fn show(
@@ -164,6 +164,58 @@ fn emitter_fields(
                 EditKind::SetSimulationCondition {
                     emitter,
                     new: sim_cond,
+                },
+            ));
+        }
+
+        let mut blend = graph.blend;
+        let threshold = match blend {
+            BlendMode::Mask(value) => value,
+            _ => 0.5,
+        };
+        let label = |mode: BlendMode| match mode {
+            BlendMode::Blend => "Alpha",
+            BlendMode::Premultiply => "Premultiplied",
+            BlendMode::Add => "Additive",
+            BlendMode::Multiply => "Multiply",
+            BlendMode::Mask(_) => "Cutout",
+            BlendMode::Opaque => "Opaque",
+        };
+        field_row(ui, label_w, "Blend mode", |ui| {
+            egui::ComboBox::from_id_salt(("emitter-blend", doc, emitter))
+                .selected_text(label(blend))
+                .show_ui(ui, |ui| {
+                    for mode in [
+                        BlendMode::Blend,
+                        BlendMode::Premultiply,
+                        BlendMode::Add,
+                        BlendMode::Multiply,
+                        BlendMode::Mask(threshold),
+                        BlendMode::Opaque,
+                    ] {
+                        ui.selectable_value(&mut blend, mode, label(mode));
+                    }
+                });
+        });
+        if let BlendMode::Mask(value) = &mut blend
+            && let Some(threshold) = drag_f32(
+                ui,
+                label_w,
+                ("emitter-cutoff", doc, emitter),
+                "Cutoff",
+                *value,
+                0.0..=1.0,
+                0.01,
+            )
+        {
+            *value = threshold;
+        }
+        if blend != graph.blend {
+            edits.write(EditRequest::new(
+                doc,
+                EditKind::SetBlendMode {
+                    emitter,
+                    new: blend,
                 },
             ));
         }

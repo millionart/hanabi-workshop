@@ -86,10 +86,13 @@ fn main() {
                 }),
         )
         .add_plugins(plugins::EditorPlugins)
-        .add_systems(Startup, move |mut open: MessageWriter<app_commands::AppCommand>| {
-            for path in &documents {
-                open.write(app_commands::AppCommand::OpenFile(path.clone()));
-            }
-        })
+        .add_systems(
+            Startup,
+            move |mut open: MessageWriter<app_commands::AppCommand>| {
+                for path in &documents {
+                    open.write(app_commands::AppCommand::OpenFile(path.clone()));
+                }
+            },
+        )
         .run();
 }

@@ -201,6 +201,7 @@ fn migrate_v1_to_v2(bytes: &[u8]) -> Result<EffectGraphAsset, EffectGraphLoaderE
         nodes,
         stacks,
         links,
+        ..EmitterGraph::empty(emitter_id)
     };
 
     let layout = layout.map(|mut l| {

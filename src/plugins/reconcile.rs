@@ -333,6 +333,7 @@ fn ensure_scene_root(
             .iter()
             .map(|(name, value)| (name.clone(), *value))
             .collect();
+        let pose = content.effect_graph().emitter(emitter).unwrap().pose;
 
         let mut emitter_cmds = commands.spawn((
             SceneEmitter(emitter),
@@ -340,7 +341,9 @@ fn ensure_scene_root(
             // Required when the (proxy) asset declares any properties: see
             // seed_props above.
             bevy_hanabi::EffectProperties::default().with_properties(seed_props),
-            Transform::IDENTITY,
+            Transform::from_translation(pose.translation)
+                .with_rotation(pose.rotation)
+                .with_scale(pose.scale),
             layer.clone(),
         ));
         if !images.is_empty() {

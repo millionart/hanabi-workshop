@@ -1337,11 +1337,13 @@ pub fn bake_emitter_with_provenance(
         return Err(errors);
     }
 
-    let mut asset = EffectAsset::new(graph.capacity, spawner, module);
+    let blend = graph.blend.bake(&mut module);
+    let mut asset = EffectAsset::new(graph.capacity, spawner, module).with_alpha_mode(blend);
     asset.name = graph.name.to_string();
     asset.simulation_space = graph.simulation_space;
     asset.simulation_condition = graph.simulation_condition;
     asset.z_layer_2d = graph.z_layer_2d;
+    asset.mesh = graph.mesh.clone();
     for m in init {
         asset = asset.add_modifier(ModifierContext::Init, m);
     }
@@ -1811,6 +1813,7 @@ mod tests {
             nodes,
             stacks: vec![],
             links,
+            ..EmitterGraph::empty(test_emitter_id())
         }
     }
 
@@ -2891,6 +2894,7 @@ mod tests {
             nodes,
             stacks,
             links: vec![],
+            ..EmitterGraph::empty(test_emitter_id())
         }
     }
 

@@ -215,6 +215,10 @@ pub enum EditKind {
     SetCapacity { emitter: EmitterId, new: u32 },
     /// Set `EmitterGraph.z_layer_2d`.
     SetZLayer2d { emitter: EmitterId, new: f32 },
+    SetBlendMode {
+        emitter: EmitterId,
+        new: hanabi_effect_graph::model::BlendMode,
+    },
 
     // --- Modifier stacks ---
     /// Add a fresh modifier of `type_id` (a registered Hanabi modifier struct)
@@ -768,6 +772,7 @@ fn emitter_of(kind: &EditKind) -> Option<EmitterId> {
         | EditKind::SetSimulationCondition { emitter, .. }
         | EditKind::SetCapacity { emitter, .. }
         | EditKind::SetZLayer2d { emitter, .. }
+        | EditKind::SetBlendMode { emitter, .. }
         | EditKind::AddModifierFromTemplate { emitter, .. }
         | EditKind::InsertModifierNode { emitter, .. }
         | EditKind::RemoveModifier { emitter, .. }
@@ -1215,6 +1220,16 @@ fn apply_to_graph(
                 .ok_or("emitter not found")?;
             let old = graph_edit::set_z_layer_2d(graph, *new);
             EditKind::SetZLayer2d {
+                emitter: *emitter,
+                new: old,
+            }
+        }
+        EditKind::SetBlendMode { emitter, new } => {
+            let graph = effect_graph
+                .emitter_mut(*emitter)
+                .ok_or("emitter not found")?;
+            let old = std::mem::replace(&mut graph.blend, *new);
+            EditKind::SetBlendMode {
                 emitter: *emitter,
                 new: old,
             }
