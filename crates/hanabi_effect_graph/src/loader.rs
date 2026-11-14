@@ -72,8 +72,11 @@ impl Plugin for EffectGraphPlugin {
 /// The single source of truth for the `.hnb` on-disk format, shared by
 /// [`EffectGraphLoader`] and synchronous editor saves/loads.
 pub fn from_ron_bytes(bytes: &[u8]) -> Result<EffectGraphAsset, EffectGraphLoaderError> {
-    // Read only the version first; RON ignores the leading magic-header comment
-    // and any fields beyond `version`.
+    let current = match ron::de::from_bytes::<EffectGraphAsset>(bytes) {
+        Ok(asset) if asset.version == FORMAT_VERSION => return Ok(asset),
+        other => other,
+    };
+    // Older documents need the version to select their migration schema.
     let AssetVersion { version } = ron::de::from_bytes(bytes)?;
     if version > FORMAT_VERSION {
         return Err(EffectGraphLoaderError::UnsupportedVersion {
@@ -82,7 +85,7 @@ pub fn from_ron_bytes(bytes: &[u8]) -> Result<EffectGraphAsset, EffectGraphLoade
         });
     }
     if version == FORMAT_VERSION {
-        return Ok(ron::de::from_bytes(bytes)?);
+        return Ok(current?);
     }
     migrate_from(bytes, version)
 }
