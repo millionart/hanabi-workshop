@@ -32,6 +32,16 @@ use bevy::{
 };
 use bevy_hanabi::{EffectMaterial, EffectSystems};
 
+#[cfg(feature = "3d")]
+use bevy::{
+    pbr::{CORE_3D_SHADOW_MAP_FORMAT, LATE_SHADOW_PASS, ShadowView, ViewLightEntities, per_view_shadow_pass},
+    platform::collections::{HashMap, HashSet},
+    render::{
+        render_phase::{BinnedPhaseItem, DrawFunctions, PhaseItem, PhaseItemExtraIndex},
+        view::{ExtractedView, ViewUniformOffset},
+    },
+};
+
 pub const SCENE_DEPTH_SLOT: &str = "scene_depth";
 pub const SCENE_COLOR_SLOT: &str = "scene_color";
 
@@ -66,6 +76,11 @@ impl Plugin for SceneDepthPlugin {
                     .in_set(RenderSystems::PhaseSort)
                     .before(sort_phase_system::<Transparent3d>),
             );
+        #[cfg(feature = "3d")]
+        render.add_systems(Render, specialize_shadow_pipelines.in_set(RenderSystems::PhaseSort))
+            .add_systems(Core3d, draw_hanabi_shadows
+                .after(per_view_shadow_pass::<LATE_SHADOW_PASS>)
+                .before(Core3dSystems::MainPass));
         render.add_systems(
             Render,
             clear_hanabi_bins
@@ -132,6 +147,10 @@ impl Plugin for SceneDepthPlugin {
 struct SurfacePipelines {
     options: bevy::platform::collections::HashMap<AssetId<Shader>, SurfaceOption>,
     pipelines: bevy::platform::collections::HashMap<CachedRenderPipelineId, CachedRenderPipelineId>,
+    #[cfg(feature = "3d")]
+    shadow_casters: HashSet<AssetId<Shader>>,
+    #[cfg(feature = "3d")]
+    shadow_pipelines: HashMap<CachedRenderPipelineId, CachedRenderPipelineId>,
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +170,8 @@ fn extract_surface_options(
             AssetEvent::Added { id } | AssetEvent::Modified { id } => id,
             AssetEvent::Removed { id } => {
                 options.options.remove(&id);
+                #[cfg(feature = "3d")]
+                options.shadow_casters.remove(&id);
                 continue;
             }
             _ => continue,
@@ -162,6 +183,12 @@ fn extract_surface_options(
             continue;
         };
         let source = shader.source.as_str();
+        #[cfg(feature = "3d")]
+        if source.contains(crate::particle_material::SHADOW_CASTER_MARKER) {
+            options.shadow_casters.insert(id);
+        } else {
+            options.shadow_casters.remove(&id);
+        }
         let option = if source.contains("// hanabi_workshop: soft_additive") {
             SurfaceOption::SoftAdditive
         } else if source.contains("// hanabi_workshop: damage_number_depth") {
@@ -181,6 +208,86 @@ fn extract_surface_options(
             continue;
         };
         options.options.insert(id, option);
+    }
+}
+
+#[cfg(feature = "3d")]
+fn specialize_shadow_pipelines(
+    phases: Res<ViewBinnedRenderPhases<AlphaMask3d>>,
+    cache: Res<PipelineCache>,
+    mut options: ResMut<SurfacePipelines>,
+) {
+    let SurfacePipelines { shadow_casters, shadow_pipelines, .. } = &mut *options;
+    shadow_pipelines.retain(|pipeline, _| {
+        cache.get_render_pipeline_descriptor(*pipeline).fragment.as_ref()
+            .is_some_and(|fragment| shadow_casters.contains(&fragment.shader.id()))
+    });
+    if shadow_casters.is_empty() {
+        return;
+    }
+    for phase in phases.values() {
+        for (batch, _) in phase.non_mesh_items.keys() {
+            if shadow_pipelines.contains_key(&batch.pipeline)
+                || matches!(cache.get_render_pipeline_state(batch.pipeline), CachedPipelineState::Queued)
+            {
+                continue;
+            }
+            let desc = cache.get_render_pipeline_descriptor(batch.pipeline);
+            if !desc.fragment.as_ref().is_some_and(|frag| shadow_casters.contains(&frag.shader.id())) {
+                continue;
+            }
+            let mut desc = desc.clone();
+            desc.label = Some("Hanabi directional shadow".into());
+            desc.multisample = MultisampleState::default();
+            let Some(depth) = &mut desc.depth_stencil else { continue; };
+            depth.format = CORE_3D_SHADOW_MAP_FORMAT;
+            desc.fragment.as_mut().unwrap().targets.clear();
+            shadow_pipelines.insert(batch.pipeline, cache.queue_render_pipeline(desc));
+        }
+    }
+}
+
+#[cfg(feature = "3d")]
+fn draw_hanabi_shadows(
+    world: &World,
+    view: ViewQuery<(&ExtractedView, &ViewLightEntities)>,
+    lights: Query<(&ShadowView, &ViewUniformOffset)>,
+    phases: Res<ViewBinnedRenderPhases<AlphaMask3d>>,
+    options: Res<SurfacePipelines>,
+    draws: Res<DrawFunctions<AlphaMask3d>>,
+    cache: Res<PipelineCache>,
+    mut ctx: RenderContext,
+) {
+    let (view, view_lights) = view.into_inner();
+    let Some(phase) = phases.get(&view.retained_view_entity) else { return; };
+    let casters: Vec<_> = phase.non_mesh_items.iter().filter_map(|((batch, bin), members)| {
+        let pipeline = *options.shadow_pipelines.get(&batch.pipeline)?;
+        cache.get_render_pipeline(pipeline)?;
+        let mut batch = batch.clone();
+        batch.pipeline = pipeline;
+        Some((batch, bin, members))
+    }).collect();
+    if casters.is_empty() {
+        return;
+    }
+    let mut draw_functions = draws.write();
+    for light in view_lights.lights.iter().copied() {
+        let Ok((shadow, _)) = lights.get(light) else { continue; };
+        let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
+            label: Some("Hanabi directional shadows"),
+            depth_stencil_attachment: Some(shadow.depth_attachment.get_attachment(StoreOp::Store)),
+            ..Default::default()
+        });
+        for (batch, bin, members) in &casters {
+            let Some(draw) = draw_functions.get_mut(batch.draw_function) else { continue; };
+            for (&main, &render) in &members.entities {
+                let item = AlphaMask3d::new(batch.clone(), (*bin).clone(), (render, main), 0..1, PhaseItemExtraIndex::None);
+                if let Err(error) = draw.draw(world, &mut pass, light, &item) {
+                    warn!(?error, "Hanabi directional shadow draw failed");
+                }
+            }
+        }
+        debug!(batches = casters.len(), "Hanabi alpha-masked effects drew directional shadows");
     }
 }
 

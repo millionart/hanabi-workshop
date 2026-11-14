@@ -196,6 +196,7 @@ pub fn register(registry: &AppTypeRegistry) {
             metallic: 0.,
             roughness: 1.,
             reflectance: 0.,
+            cast_shadows: false,
         })
     });
     register_reflect_modifier::<LegacyParticleModifier>(registry, |_| {
@@ -468,9 +469,12 @@ pub struct SurfaceLightingModifier {
     pub metallic: f32,
     pub roughness: f32,
     pub reflectance: f32,
+    #[serde(default)]
+    pub cast_shadows: bool,
 }
 
 pub const SCENE_LIGHT_SLOT: &str = "scene_light";
+pub(crate) const SHADOW_CASTER_MARKER: &str = "// hanabi_workshop: cast_shadows\n";
 
 /// Two scrolling source height maps drive the cutout and view-dependent UV offset.
 #[derive(Clone, Copy, Debug, Default, Reflect, Serialize, Deserialize)]
@@ -947,6 +951,9 @@ impl RenderModifier for SurfaceLightingModifier {
         context.set_needs_normal();
         context.set_needs_uv();
         let mut code = String::from("{\n");
+        if self.cast_shadows {
+            code.push_str(SHADOW_CASTER_MARKER);
+        }
         fragment_world_position(&mut code);
         code.push_str("let world = world_h.xyz / world_h.w;\nvar n = normalize(normal);\n");
         let light = self.light_slot;
