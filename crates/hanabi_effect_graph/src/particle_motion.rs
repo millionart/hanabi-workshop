@@ -336,7 +336,28 @@ impl Modifier for ParticleSnapshotModifier {
         }
         let texture = format!("material_texture_{}", self.particle_state_slot);
         if self.trail_segments {
-            context.main_code.push_str(&format!("\nif (({active}) != 0u) {{\nlet first = source_state_component({texture}, particle_index, 0u);\nlet second = source_state_component({texture}, particle_index, 1u);\nlet first_tangent = source_state_component({texture}, particle_index, 2u);\nlet second_tangent = source_state_component({texture}, particle_index, 3u);\nparticle.position = first.xyz;\nparticle.f32x3_0 = second.xyz;\nparticle.f32x3_1 = first_tangent.xyz;\nparticle.f32x3_2 = second_tangent.xyz;\nparticle.f32x4_0 = source_state_component({texture}, particle_index, 4u);\nparticle.f32x4_1 = source_state_component({texture}, particle_index, 5u);\nlet alpha_random = source_state_component({texture}, particle_index, 6u);\nparticle.f32x2_2 = alpha_random.xy;\nparticle.f32_1 = alpha_random.z;\nparticle.size3 = vec3<f32>(first_tangent.w, second_tangent.w, 1.0);\nparticle.f32_7 = select(-1.0, 1.0, first.w >= 0.0);\nparticle.age = 0.0;\nis_alive = true;\n}}\n"));
+            context.main_code.push_str(&format!("
+if (({active}) != 0u) {{
+let first = source_state_component({texture}, particle_index, 0u);
+let second = source_state_component({texture}, particle_index, 1u);
+let first_tangent = source_state_component({texture}, particle_index, 2u);
+let second_tangent = source_state_component({texture}, particle_index, 3u);
+particle.position = first.xyz;
+particle.f32x3_0 = second.xyz;
+particle.f32x3_1 = first_tangent.xyz;
+particle.f32x3_2 = second_tangent.xyz;
+particle.f32x4_0 = source_state_component({texture}, particle_index, 4u);
+particle.f32x4_1 = source_state_component({texture}, particle_index, 5u);
+let alpha_random = source_state_component({texture}, particle_index, 6u);
+particle.f32x2_2 = alpha_random.xy;
+particle.f32x2_1 = vec2<f32>(first.w, second.w);
+particle.f32_1 = alpha_random.z;
+particle.size3 = vec3<f32>(first_tangent.w, second_tangent.w, 1.0);
+particle.f32_7 = select(-1.0, 1.0, first.w >= 0.0);
+particle.age = 0.0;
+is_alive = true;
+}}
+"));
             return Ok(());
         }
         let mut random = String::new();

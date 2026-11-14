@@ -200,8 +200,7 @@ impl Modifier for TrailSegmentModifier {
             Attribute::F32X3_0,
             Attribute::F32X3_1,
             Attribute::F32X3_2,
-            Attribute::F32X4_0,
-            Attribute::F32X4_1,
+            Attribute::F32X2_1,
             Attribute::F32X2_3,
             Attribute::F32X4_2,
             Attribute::F32X4_3,
@@ -236,7 +235,7 @@ if particle.f32_7 > 0.0 {
     let width = mix(particle.f32x2_3.x, particle.f32x2_3.y, endpoint);
     out.position = view.clip_from_world * vec4<f32>(center + side * (vertex_uv.y - 0.5) * width, 1.0);
     out.normal = select(vec3<f32>(0.0, 1.0, 0.0), camera / max(length(camera), 1e-6), length(camera) > 1e-6);
-    out.uv = vec2<f32>(mix(particle.f32x4_0.w, particle.f32x4_1.w, endpoint), vertex_uv.y);
+    out.uv = vec2<f32>(mix(particle.f32x2_1.x, particle.f32x2_1.y, endpoint), vertex_uv.y);
     out.color = mix(particle.f32x4_2, particle.f32x4_3, endpoint);
     return out;
 }
