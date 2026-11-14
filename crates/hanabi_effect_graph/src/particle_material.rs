@@ -24,6 +24,10 @@ pub struct CloudRemapModifier {
     pub cloud_scroll: Vec4,
     pub tint: Vec4,
     pub opacity: f32,
+    #[serde(default)]
+    pub use_trail_alpha: bool,
+    #[serde(default)]
+    pub direct_rgba: bool,
     pub alpha_boost: f32,
     pub alpha_bias: f32,
     pub boost: f32,
@@ -77,6 +81,8 @@ impl Default for CloudRemapModifier {
             cloud_scroll: Vec4::ZERO,
             tint: Vec4::ONE,
             opacity: 1.,
+            use_trail_alpha: false,
+            direct_rgba: false,
             alpha_boost: 1.,
             alpha_bias: 0.,
             boost: 1.,
@@ -350,7 +356,11 @@ impl Modifier for CloudRemapModifier {
         Some(self)
     }
     fn attributes(&self) -> Cow<'_, [Attribute]> {
-        Cow::Borrowed(&[])
+        if self.use_trail_alpha {
+            Cow::Borrowed(&[Attribute::F32_6])
+        } else {
+            Cow::Borrowed(&[])
+        }
     }
     fn boxed_clone(&self) -> BoxedModifier {
         Box::new(*self)
@@ -405,6 +415,12 @@ impl RenderModifier for CloudRemapModifier {
                 self.tint.w
             }
         );
+        let trail_alpha = if self.use_trail_alpha {
+            context.set_needs_particle_fragment();
+            " * particle.f32_6"
+        } else {
+            ""
+        };
         if self.use_cloud1 || self.use_cloud2 {
             let phase = if self.modulate_vertex_rgb || self.opaque_cutout || self.intersection {
                 "0.0"
@@ -455,12 +471,18 @@ impl RenderModifier for CloudRemapModifier {
             }
         }
         if self.opaque_cutout {
+            code.push_str(&format!("alpha = alpha{trail_alpha};\n"));
             let ramp = if self.use_ramp {
                 sample(self.ramp_slot, &uv("vec2<f32>(alpha, 0.5)", self.ramp_uv))
             } else {
                 "vec4<f32>(0.5)".into()
             };
             code.push_str(&format!("let ramp = {ramp};\ncolor = vec4<f32>(ramp.rgb * color.rgb * vec3<f32>({:?}, {:?}, {:?}), alpha);\n}}\n", self.tint.x, self.tint.y, self.tint.z));
+            context.fragment_code.push_str(&code);
+            return Ok(());
+        }
+        if self.direct_rgba {
+            code.push_str(&format!("color = vec4<f32>(mask.rgb * color.rgb * vec3<f32>({:?}, {:?}, {:?}) * {:?}, alpha * {:?} + {:?});\n}}\n", self.tint.x, self.tint.y, self.tint.z, self.boost, self.alpha_boost, self.alpha_bias));
             context.fragment_code.push_str(&code);
             return Ok(());
         }
@@ -518,13 +540,13 @@ impl RenderModifier for CloudRemapModifier {
         let ramp = if self.use_ramp {
             let depth = if depth_fade { " * depth_fade" } else { "" };
             let coords = format!(
-                "vec2<f32>((alpha * {:?} + {:?}) * {:?}{fade}{depth}, 0.5)",
+                "vec2<f32>((alpha * {:?} + {:?}) * {:?}{trail_alpha}{fade}{depth}, 0.5)",
                 self.alpha_boost, self.alpha_bias, self.opacity
             );
             sample(self.ramp_slot, &uv(&coords, self.ramp_uv))
         } else {
             format!(
-                "vec4<f32>(mask.rgb, (alpha * {:?} + {:?}) * {:?})",
+                "vec4<f32>(mask.rgb, (alpha * {:?} + {:?}) * {:?}{trail_alpha})",
                 self.alpha_boost, self.alpha_bias, self.opacity
             )
         };
