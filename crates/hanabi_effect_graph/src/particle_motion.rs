@@ -52,7 +52,7 @@ pub struct ParticleSpawnEventModifier {
     pub suppress_snapshot: bool,
 }
 
-/// Emit from each parent particle at a constant rate after its own start delay.
+/// Emit from each parent particle on a schedule relative to its birth.
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct TimedSubEmitterModifier {
     pub particles_per_second: f32,
@@ -62,6 +62,14 @@ pub struct TimedSubEmitterModifier {
     pub looping: bool,
     pub probability: f32,
     pub child_index: u32,
+    #[serde(default)]
+    pub burst_count: u32,
+    #[serde(default)]
+    pub burst_repetitions: u32,
+    #[serde(default)]
+    pub burst_time: f32,
+    #[serde(default)]
+    pub burst_interval: f32,
 }
 
 /// Interpret the child's shape around the parent position already stored in world space.
@@ -303,6 +311,10 @@ pub fn register(registry: &AppTypeRegistry) {
             looping: false,
             probability: 1.,
             child_index: 0,
+            burst_count: 0,
+            burst_repetitions: 0,
+            burst_time: 0.,
+            burst_interval: 0.,
         })
     });
     register_reflect_modifier::<SubEmitterTransformModifier>(registry, |_| {
@@ -786,6 +798,25 @@ fn sub_emitter_random(x: u32) -> f32 {
         } else {
             format!("{:?}", self.duration.max(0.))
         };
+        let burst = if self.burst_count > 0 && self.burst_repetitions > 0 {
+            let time = self.burst_time.max(0.);
+            let interval = self.burst_interval.max(f32::EPSILON);
+            let repetitions = self.burst_repetitions - 1;
+            let count = self.burst_count;
+            // Unity tests the first firing in [previous, current), then repeats by cycle index.
+            format!(
+                r#"
+        let first_burst = previous <= {time:?} && current > {time:?};
+        let previous_cycle = (previous - {time:?}) / {interval:?};
+        let next_cycle = (current - {time:?}) / {interval:?};
+        let repeat_burst = previous_cycle > 0.0 && previous_cycle < {repetitions}.0
+            && floor(next_cycle) > floor(previous_cycle);
+        count += select(0u, {count}u, first_burst || repeat_burst);
+"#,
+            )
+        } else {
+            String::new()
+        };
         // shortcut: Hanabi's birth identity stands in for Unity's particle seed until the spawn seeds are shared.
         // shortcut: use the current parent position until GPU events can carry per-birth interpolated data.
         context.main_code.push_str(&format!(
@@ -797,7 +828,8 @@ if (was_alive && {dt} > 0.0 && {probability:?} > 0.0) {{
         let elapsed = min(particle.age, particle.lifetime) - delay;
         let previous = clamp(particle.age - {dt} - delay, 0.0, {duration});
         let current = clamp(elapsed, previous, {duration});
-        let count = u32(floor(current * {rate:?}) - floor(previous * {rate:?}));
+        var count = u32(floor(current * {rate:?}) - floor(previous * {rate:?}));
+        {burst}
         append_spawn_events_{child}((*effect_metadata).base_child_index, particle_index, count);
     }}
 }}
