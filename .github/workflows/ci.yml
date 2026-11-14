@@ -154,7 +154,7 @@ jobs:
         run: cargo +stable package -p hanabi_effect_graph --locked
 
   msrv:
-    name: Rust 1.95 MSRV
+    name: Rust 1.97.1 MSRV
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
@@ -169,8 +169,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes libasound2-dev libudev-dev
 
-      - name: Install Rust 1.95
-        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal
 
       - name: Restore Cargo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -179,11 +179,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: linux-msrv-1.95-${{ hashFiles('Cargo.lock') }}
-          restore-keys: linux-msrv-1.95-
+          key: linux-msrv-1.97.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-msrv-1.97.1-
 
       - name: Check workspace on MSRV
-        run: cargo +1.95.0 check --workspace --all-targets --all-features --locked
+        run: cargo +1.97.1 check --workspace --all-targets --all-features --locked
 
   semver:
     name: Library SemVer

@@ -1,7 +1,7 @@
 //! Shader compilation error surfacing.
 //!
 //! A safety net for invalid emitters the editor's own validation doesn't yet
-//! catch. `bevy_hanabi` bakes each emitter to WGSL that `wgpu`/`naga` only
+//! catch. `bevy_hanabi` bakes each emitter to WESL that `wgpu`/`naga` only
 //! validate when the render pipeline is built — in the **render world**, where
 //! a failure is otherwise just an `error!` log the user never sees while the
 //! viewport silently goes blank.
@@ -29,27 +29,12 @@ use bevy::{
         Render, RenderApp, RenderSystems,
         render_resource::{CachedPipelineState, PipelineCache, PipelineDescriptor},
     },
-    shader::{Shader, ShaderCacheError},
+    shader::Shader,
 };
 use bevy_hanabi::CompiledParticleEffect;
 use hanabi_effect_graph::model::EmitterId;
-use naga_oil::compose::{ComposerErrorInner, ErrSource};
 
 use crate::document::{DocumentSceneRoot, SceneEmitter};
-
-/// A position within the compiled shader source the error points at.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ErrorLocation {
-    /// 1-based line number in the *composed* shader source (after naga_oil
-    /// inlines imports), so it need not match the pre-composition WGSL the
-    /// Shaders panel displays.
-    pub line: u32,
-    /// 1-based column (byte offset within the line).
-    pub column: u32,
-    /// The offending source line itself, trimmed — the most directly useful
-    /// part, since it pinpoints the code without a line-number cross-reference.
-    pub snippet: String,
-}
 
 /// One failed pipeline, attributed to a document and emitter by its compiled
 /// shader ids.
@@ -59,21 +44,17 @@ pub struct ShaderCompileError {
     /// for.
     pub emitter: EmitterId,
     /// Path of the shader the failed pipeline was built from, e.g.
-    /// `hanabi/demo~3~1_render_1234.wgsl`. `None` if the asset is gone or has
+    /// `hanabi/demo~3~1_render_1234.wesl`. `None` if the asset is gone or has
     /// no path (non-emitter pipelines). Used for the phase label and panel
     /// banner, not for document/emitter matching.
     pub shader_path: Option<String>,
     /// Human-readable compiler error (the `PipelineCacheError` display chain).
     pub message: String,
-    /// Source location the error points at, when the error carries a span we
-    /// can resolve. `None` for errors without inline source (e.g. the rarer
-    /// imported-module case, which needs the render world's private composer).
-    pub location: Option<ErrorLocation>,
 }
 
 impl ShaderCompileError {
     /// The emitter phase this shader belongs to, parsed from its path
-    /// (`hanabi/{name}_{phase}_{hash}.wgsl`).
+    /// (`hanabi/{name}_{phase}_{hash}.wesl`).
     pub fn phase(&self) -> Option<crate::document::ModifierGroup> {
         use crate::document::ModifierGroup::*;
         let path = self.shader_path.as_deref()?;
@@ -100,7 +81,6 @@ pub struct ShaderErrors(pub Vec<ShaderCompileError>);
 struct RawPipelineError {
     shaders: Vec<AssetId<Shader>>,
     message: String,
-    location: Option<ErrorLocation>,
 }
 
 /// Shared buffer bridging the render-world scan and the main-world publisher.
@@ -136,7 +116,6 @@ fn collect_pipeline_errors(cache: Res<PipelineCache>, channel: Res<ShaderErrorCh
         errors.push(RawPipelineError {
             shaders: shader_ids(&pipeline.descriptor),
             message: error_chain(err),
-            location: error_location(err),
         });
     }
     if let Ok(mut buf) = channel.0.lock() {
@@ -178,7 +157,6 @@ fn publish_shader_errors(
         let entry = ResolvedError {
             shader_path,
             message: e.message,
-            location: e.location,
         };
         if !resolved.iter().any(|(x, _)| *x == entry) {
             resolved.push((entry, e.shaders));
@@ -195,7 +173,6 @@ fn publish_shader_errors(
                         emitter,
                         shader_path: entry.shader_path.clone(),
                         message: entry.message.clone(),
-                        location: entry.location.clone(),
                     });
                 }
             }
@@ -213,7 +190,6 @@ fn publish_shader_errors(
 struct ResolvedError {
     shader_path: Option<String>,
     message: String,
-    location: Option<ErrorLocation>,
 }
 
 /// The shader [`AssetId`]s hanabi compiled for each of `doc`'s emitters.
@@ -257,6 +233,12 @@ fn shader_ids(descriptor: &PipelineDescriptor) -> Vec<AssetId<Shader>> {
             ids
         }
         PipelineDescriptor::ComputePipelineDescriptor(d) => vec![d.shader.id()],
+        PipelineDescriptor::MeshPipelineDescriptor(d) => {
+            let mut ids = vec![d.mesh.shader.id()];
+            ids.extend(d.task.iter().map(|stage| stage.shader.id()));
+            ids.extend(d.fragment.iter().map(|stage| stage.shader.id()));
+            ids
+        }
     }
 }
 
@@ -275,61 +257,4 @@ fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
         source = cause.source();
     }
     message
-}
-
-/// Bit shift separating a span's module index from its in-module offset.
-///
-/// naga_oil encodes a span's owning module index in its high bits
-/// (`module_index << SPAN_SHIFT`); the low bits are the in-module byte offset.
-/// The shift is private in naga_oil (`compose::SPAN_SHIFT`).
-const NAGA_OIL_SPAN_SHIFT: usize = 21;
-
-/// Resolve a source location from a shader-compilation error.
-///
-/// Works when the error carries a span into inline (top-level) source. Returns
-/// `None` for errors whose source lives in an imported module (resolvable only
-/// via the render world's private composer) or that carry no span.
-fn error_location(err: &ShaderCacheError) -> Option<ErrorLocation> {
-    let ShaderCacheError::ProcessShaderError(ce) = err else {
-        return None;
-    };
-    // Only the top-level shader being constructed carries its source inline;
-    // imported-module errors reference a source we'd need the composer to read.
-    let ErrSource::Constructing { source, offset, .. } = &ce.source else {
-        return None;
-    };
-    let range = first_span(&ce.inner)?.to_range()?;
-    // Reject spans owned by an imported module: their low bits index a
-    // different source than the inline one we hold.
-    if range.start >> NAGA_OIL_SPAN_SHIFT != 0 {
-        return None;
-    }
-    let start = range.start.checked_sub(*offset)?;
-    if start > source.len() {
-        return None;
-    }
-    let prefix = &source[..start];
-    let line = prefix.matches('\n').count() as u32 + 1;
-    let line_start = prefix.rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let column = (start - line_start) as u32 + 1;
-    let line_end = source[line_start..]
-        .find('\n')
-        .map(|p| line_start + p)
-        .unwrap_or(source.len());
-    let snippet = source[line_start..line_end].trim().to_string();
-    Some(ErrorLocation {
-        line,
-        column,
-        snippet,
-    })
-}
-
-/// The first resolvable span from a composer error's inner variant.
-fn first_span(inner: &ComposerErrorInner) -> Option<naga::Span> {
-    match inner {
-        ComposerErrorInner::ShaderValidationError(ws)
-        | ComposerErrorInner::HeaderValidationError(ws) => ws.spans().next().map(|(s, _)| *s),
-        ComposerErrorInner::WgslParseError(pe) => pe.labels().next().map(|(s, _)| s),
-        _ => None,
-    }
 }

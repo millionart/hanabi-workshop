@@ -109,6 +109,10 @@ pub struct DocumentTabViewer<'a, 'w, 's> {
 impl<'a, 'w, 's> TabViewer for DocumentTabViewer<'a, 'w, 's> {
     type Tab = crate::ui::OuterTab;
 
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        egui::Id::new(*tab)
+    }
+
     /// The Home tab is not closable; documents route through the app-command
     /// channel.
     fn is_closeable(&self, tab: &Self::Tab) -> bool {

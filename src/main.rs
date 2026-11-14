@@ -22,17 +22,17 @@ use hanabi_effect_graph::modifier_registry;
 
 fn main() {
     // Handle --version / -V and --help / -h before Bevy initialises anything,
-    // so CI can smoke-test the binary on a headless machine. Unrecognised
-    // arguments are left for the OS / Bevy to process normally.
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            "--version" | "-V" => {
+    // so CI can smoke-test the binary on a headless machine.
+    let mut documents = Vec::new();
+    for arg in std::env::args_os().skip(1) {
+        match arg.to_str() {
+            Some("--version" | "-V") => {
                 println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
-            "--help" | "-h" => {
+            Some("--help" | "-h") => {
                 println!(
-                    "Usage: {} [OPTIONS]\n\n\
+                    "Usage: {} [OPTIONS] [FILE.hnb ...]\n\n\
                      {}\n\n\
                      Options:\n  \
                        -h, --help     Print help\n  \
@@ -42,7 +42,12 @@ fn main() {
                 );
                 std::process::exit(0);
             }
-            _ => {}
+            _ => {
+                let path = std::path::PathBuf::from(arg);
+                if path.extension().is_some_and(|ext| ext == "hnb") {
+                    documents.push(path);
+                }
+            }
         }
     }
 
@@ -81,5 +86,10 @@ fn main() {
                 }),
         )
         .add_plugins(plugins::EditorPlugins)
+        .add_systems(Startup, move |mut open: MessageWriter<app_commands::AppCommand>| {
+            for path in &documents {
+                open.write(app_commands::AppCommand::OpenFile(path.clone()));
+            }
+        })
         .run();
 }

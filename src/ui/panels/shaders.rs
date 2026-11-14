@@ -1,7 +1,7 @@
-//! Shaders panel — generated WGSL inspector.
+//! Shaders panel — generated WESL inspector.
 //!
 //! Shows every emitter pipeline's live runtime state plus the **assembled**
-//! WGSL shaders that Hanabi compiles for the current emitter (init / update /
+//! WESL shaders that Hanabi compiles for the current emitter (init / update /
 //! render). The exact shader handles are read from the emitter's
 //! [`bevy_hanabi::CompiledParticleEffect`] via
 //! [`bevy_hanabi::CompiledParticleEffect::get_configured_shaders`], then the
@@ -56,7 +56,7 @@ pub fn show(
 
     // Compilation-error banner. Shown whenever any of this emitter's shaders
     // failed to build, with a button that jumps to the offending phase so the
-    // user can read the generated WGSL the compiler choked on. The errors are
+    // user can read the generated WESL the compiler choked on. The errors are
     // already scoped to this document. Full-width, square banner with a bright
     // accent band down the left edge, mirroring the graph's error callouts.
     const BAND: f32 = 3.0;
@@ -85,13 +85,6 @@ pub fn show(
                         egui::RichText::new(format!("{phase_label} shader failed to compile"))
                             .strong(),
                     );
-                    if let Some(loc) = &err.location {
-                        ui.label(
-                            egui::RichText::new(format!("line {}:{}", loc.line, loc.column))
-                                .monospace()
-                                .color(egui::Color32::from_rgb(0xF0, 0xC0, 0xC0)),
-                        );
-                    }
                     if let Some(p) = err_phase
                         && p != phase
                     {
@@ -102,19 +95,6 @@ pub fn show(
                         });
                     }
                 });
-                // The offending source line, when known — the most direct
-                // pointer to the problem. Its line number is relative to the
-                // composed shader, so it may differ from this panel's numbering.
-                if let Some(loc) = &err.location
-                    && !loc.snippet.is_empty()
-                {
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(&loc.snippet)
-                            .monospace()
-                            .color(egui::Color32::from_rgb(0xFF, 0xE0, 0x8A)),
-                    );
-                }
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new(&err.message)

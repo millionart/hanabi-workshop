@@ -42,10 +42,10 @@ pub fn show(
     egui::Panel::left("home_create")
         .resizable(false)
         .exact_size(left_width)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             show_create_column(ui, app, pending);
         });
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         show_browse_column(ui, app, examples, recents, thumbnails, requests, clear);
     });
 }

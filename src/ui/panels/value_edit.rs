@@ -57,7 +57,7 @@ impl DragEdit<Value> {
 /// across frames.
 pub fn value_editor(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     current: Value,
 ) -> ValueEdit {
     value_editor_impl(ui, id_base, current, None)
@@ -71,7 +71,7 @@ pub fn value_editor(
 /// `value_editor`.
 pub fn inline_value_editor(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     current: Value,
     size: egui::Vec2,
 ) -> ValueEdit {
@@ -80,7 +80,7 @@ pub fn inline_value_editor(
 
 fn value_editor_impl(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     current: Value,
     size: Option<egui::Vec2>,
 ) -> ValueEdit {
@@ -169,7 +169,7 @@ fn add_sized_left(
 
 fn drag_f32(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     current: f32,
     speed: f32,
     size: Option<egui::Vec2>,
@@ -202,7 +202,7 @@ fn drag_f32(
 
 fn drag_i32(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     current: i32,
     size: Option<egui::Vec2>,
 ) -> DragEdit<i32> {
@@ -234,7 +234,7 @@ fn drag_i32(
 
 fn drag_u32(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     current: u32,
     size: Option<egui::Vec2>,
 ) -> DragEdit<u32> {
@@ -270,7 +270,7 @@ fn drag_u32(
 /// snapshot.
 fn drag_vec_n(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash + Copy,
+    id_src: impl egui::AsId + Copy,
     current: &[f32],
 ) -> DragEdit<Vec<f32>> {
     let mut drafts: Vec<f32> = current.to_vec();

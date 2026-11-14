@@ -33,6 +33,7 @@ Users needing only one context may disable default features and select it explic
 
 | `hanabi_effect_graph` | `bevy` | `bevy_hanabi` | `.hnb` | Minimum Rust |
 | --- | --- | --- | --- | --- |
+| 0.2 (fork) | 0.20.1 | 0.20 | reads 1–2; writes 2 | 1.97.1 |
 | 0.1 | 0.19 | 0.19 | reads 1–2; writes 2 | 1.95 |
 
 Every release reads every earlier released `.hnb` schema version, unless specified otherwise.

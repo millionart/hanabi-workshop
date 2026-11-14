@@ -101,6 +101,10 @@ pub struct PanelTabViewer<'w, 'wc, 'a, 'cw, 'cs> {
 impl<'w, 'wc, 'a, 'cw, 'cs> TabViewer for PanelTabViewer<'w, 'wc, 'a, 'cw, 'cs> {
     type Tab = PanelKind;
 
+    fn id(&mut self, tab: &mut Self::Tab) -> egui::Id {
+        egui::Id::new(&*tab)
+    }
+
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         let icon = panel_icon(tab);
         match tab {
@@ -264,7 +268,7 @@ pub(crate) fn panel_icon(panel: &PanelKind) -> char {
 /// open/closed state stable even when `label` text changes between frames.
 pub(super) fn collapsing<R>(
     ui: &mut egui::Ui,
-    id_salt: impl std::hash::Hash,
+    id_salt: impl egui::AsId,
     label: &str,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) {

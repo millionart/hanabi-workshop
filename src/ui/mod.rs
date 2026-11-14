@@ -480,7 +480,7 @@ fn draw_menu_bar(
     egui::Panel::top("menu_bar")
         .frame(menu_frame)
         .show_separator_line(false)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 // Widen the horizontal button padding so top-level menu
                 // entries aren't visually cramped against each other.

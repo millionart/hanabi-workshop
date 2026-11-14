@@ -119,7 +119,7 @@ pub fn show(
     let mut fit_to_content = false;
     egui::Panel::top("graph-toolbar")
         .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)))
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let grid_hover = if view.grid.enabled {
                     "Hide grid"
@@ -1489,7 +1489,7 @@ fn commit_cpu_spawner_field(
 /// to `clip` (the owning node's rect) so a wide editor never spills past it.
 fn inline_chip_control(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     hit: &ChipHit,
     value: Value,
@@ -1527,7 +1527,7 @@ fn inline_chip_control(
 /// [`Value`]: bevy_hanabi::Value
 fn inline_vector_editor(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     hit: &ChipHit,
     vv: VectorValue,
@@ -1566,7 +1566,7 @@ fn inline_vector_editor(
 /// `clip`.
 fn multi_value_editor(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     hit: &ChipHit,
     accents: &[egui::Color32],
@@ -1637,7 +1637,7 @@ fn vector_value(values: &[f32]) -> Value {
 /// Overlay a two-component unsigned-integer editor on an inline chip.
 fn inline_uvec2_editor(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     hit: &ChipHit,
     current: UVec2,
@@ -1735,7 +1735,7 @@ fn emit_input_value_edit(
 /// Returns whether it was clicked this frame. Clipped to `clip`.
 fn chip_click_target(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     rect: egui::Rect,
 ) -> bool {
@@ -1758,7 +1758,7 @@ fn chip_click_target(
 /// Painting and interaction are clipped to `clip` (the owning node body).
 fn curve_inline_editor(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     rect: egui::Rect,
     seed: Vec<(f32, f32)>,
@@ -1787,7 +1787,7 @@ fn curve_inline_editor(
 /// pick.
 fn gradient_inline_editor(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     rect: egui::Rect,
     seed: Vec<(f32, [f32; 4])>,
@@ -1867,7 +1867,7 @@ fn chevron_toggle(
 /// Paint a collapsed `Vec3` gradient as a small line preview over its chip box.
 fn curve_preview(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     rect: egui::Rect,
     keys: &[(f32, f32)],
@@ -1898,7 +1898,7 @@ fn curve_preview(
 /// Paint a collapsed `Vec4` gradient as a color strip over its chip box.
 fn gradient_preview(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     rect: egui::Rect,
     keys: &[(f32, [f32; 4])],
@@ -1964,7 +1964,7 @@ fn sample_gradient(sorted: &[(f32, [f32; 4])], t: f32) -> egui::Color32 {
 /// carries no text, so the box reads as a self-contained checkbox.
 fn inline_checkbox(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     hit: &ChipHit,
     value: bool,
@@ -2021,7 +2021,7 @@ fn inline_checkbox(
 /// in its own popup, unaffected by the chip's tiny font.
 fn inline_combo(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     hit: &ChipHit,
     current: &str,
@@ -2348,7 +2348,7 @@ fn image_binding_label(
 /// normal size; only the chip button matches the zoom-scaled font.
 fn inline_flags(
     ui: &mut egui::Ui,
-    id_base: impl std::hash::Hash + Copy,
+    id_base: impl egui::AsId + Copy,
     clip: egui::Rect,
     hit: &ChipHit,
     bits: u64,

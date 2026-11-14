@@ -216,7 +216,7 @@ fn emitter_fields(
 fn drag_f32(
     ui: &mut egui::Ui,
     label_w: f32,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     label: &str,
     current: f32,
     range: std::ops::RangeInclusive<f32>,
@@ -248,7 +248,7 @@ fn drag_f32(
 fn drag_u32(
     ui: &mut egui::Ui,
     label_w: f32,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     label: &str,
     current: u32,
 ) -> Option<u32> {

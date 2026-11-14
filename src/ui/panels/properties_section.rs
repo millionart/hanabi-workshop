@@ -366,7 +366,7 @@ impl AddKind {
 
 fn drag_f32(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     label: &str,
     current: f32,
     speed: f32,
@@ -395,7 +395,7 @@ fn drag_f32(
 
 fn drag_i32(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     label: &str,
     current: i32,
 ) -> Option<i32> {
@@ -423,7 +423,7 @@ fn drag_i32(
 
 fn drag_u32(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash,
+    id_src: impl egui::AsId,
     label: &str,
     current: u32,
 ) -> Option<u32> {
@@ -451,7 +451,7 @@ fn drag_u32(
 
 fn drag_vec_n(
     ui: &mut egui::Ui,
-    id_src: impl std::hash::Hash + Copy,
+    id_src: impl egui::AsId + Copy,
     label: &str,
     current: &[f32],
 ) -> Option<Vec<f32>> {

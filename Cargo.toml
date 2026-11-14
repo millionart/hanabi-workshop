@@ -4,7 +4,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/djeedai/hanabi-workshop"
 homepage = "https://github.com/djeedai/hanabi-workshop"
@@ -33,18 +33,16 @@ unimplemented = "deny"
 unused_async = "warn"
 
 [workspace.dependencies]
-bevy = { version = "0.19", default-features = false }
-bevy_hanabi = { version = "0.20.0-dev", git = "https://github.com/djeedai/bevy_hanabi.git", rev = "3848132f0048f8a4eafba4d685c00804dc7cdbc4", default-features = false }
-bevy_egui = "0.40"
+bevy = { version = "=0.20.1", default-features = false }
+bevy_hanabi = { version = "=0.20.0", default-features = false }
+bevy_egui = "0.43.1"
 
-egui = { version = "0.34", default-features = false }
-glam = { version = "0.32", features = ["serde"] }
-egui_dock = "0.19"
+egui = { version = "0.36", default-features = false }
+glam = { version = "0.33.2", features = ["serde"] }
+egui_dock = "0.21.1"
 serde = { version = "1", features = ["derive", "rc"] }
 ron = "0.12"
 rfd = "0.17.2"
-naga = "29"
-naga_oil = "0.22"
 thiserror = "2"
 dirs = "6"
 hanabi_node_graph = { version = "0.2.0", path = "crates/hanabi_node_graph" }
@@ -77,10 +75,6 @@ rfd.workspace = true
 dirs.workspace = true
 hanabi_node_graph.workspace = true
 hanabi_effect_graph.workspace = true
-# Pulled in transitively by bevy's render stack; named directly so we can read
-# shader-compilation error spans (line/column) out of `PipelineCacheError`.
-naga.workspace = true
-naga_oil.workspace = true
 
 # macOS: winit installs a default app menu whose Quit item binds Cmd+Q to
 # AppKit's `terminate:`, which exits the process without going through Bevy's

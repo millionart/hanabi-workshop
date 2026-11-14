@@ -40,10 +40,11 @@ The builds are unsigned:
 
 ### Building from source
 
-The minimum supported Rust version is 1.95.
+The minimum supported Rust version is 1.97.1. This fork uses Bevy 0.20.1 and Hanabi 0.20.
 
 ```sh
 cargo run
+cargo run -- examples/fountain.hnb
 ```
 
 ## `.hnb` versioning

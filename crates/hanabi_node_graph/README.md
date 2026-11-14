@@ -35,6 +35,7 @@ See the public API documentation for `GraphViewer`, `GraphView`,
 
 | `hanabi_node_graph` | egui | Minimum Rust |
 | --- | --- | --- |
+| 0.2 (fork) | 0.36 | 1.97.1 |
 | 0.1 | 0.34 | 1.95 |
 
 Versions below 1.0 follow SemVer's pre-1.0 rules: breaking public API changes
