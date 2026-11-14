@@ -49,6 +49,12 @@ pub struct CloudRemapModifier {
     #[serde(default)]
     pub intersection: bool,
     #[serde(default)]
+    pub triplanar: bool,
+    #[serde(default)]
+    pub intersection_blend: u32,
+    #[serde(default)]
+    pub intersection_cull: u32,
+    #[serde(default)]
     pub intersection_strength: f32,
     #[serde(default)]
     pub rim_strength: f32,
@@ -99,6 +105,9 @@ impl Default for CloudRemapModifier {
             fresnel_power: 0.,
             inject_vertex_offset: 0.,
             intersection: false,
+            triplanar: false,
+            intersection_blend: 0,
+            intersection_cull: 0,
             intersection_strength: 0.,
             rim_strength: 0.,
             rim_power: 1.,
@@ -417,6 +426,12 @@ impl RenderModifier for CloudRemapModifier {
                 self.tint.w
             }
         );
+        if self.intersection {
+            code.push_str(&format!(
+                "// hanabi_workshop: intersection {} {}\n",
+                self.intersection_blend, self.intersection_cull
+            ));
+        }
         let trail_alpha = if self.use_trail_alpha {
             context.set_needs_particle_fragment();
             " * particle.f32_6"
@@ -424,6 +439,11 @@ impl RenderModifier for CloudRemapModifier {
             ""
         };
         if self.use_cloud1 || self.use_cloud2 {
+            if self.triplanar {
+                context.set_needs_normal();
+                fragment_world_position(&mut code);
+                code.push_str("let projection_pos = (world_h.xyz / world_h.w) * vec3<f32>(1.0, 1.0, -1.0);\nlet normal_weights = abs(normal);\nlet weights = normal_weights / max(normal_weights.x + normal_weights.y + normal_weights.z, 1e-6);\n");
+            }
             let phase = if self.modulate_vertex_rgb || self.opaque_cutout || self.intersection {
                 "0.0"
             } else {
@@ -448,7 +468,21 @@ impl RenderModifier for CloudRemapModifier {
             ] {
                 let coords = uv("uv", transform);
                 let coords = format!("{coords} + phase * {}", vec2(scroll));
-                let alpha = if used {
+                let alpha = if used && self.triplanar {
+                    let axes = ["zy", "xz", "xy"].map(|axes| {
+                        let projected = format!(
+                            "((projection_pos.{axes} + phase * {}) * {} + {})",
+                            vec2(scroll),
+                            vec2(transform.truncate().truncate()),
+                            vec2(Vec2::new(transform.z, transform.w))
+                        );
+                        format!("{}.a", sample(slot, &projected))
+                    });
+                    format!(
+                        "dot(weights, vec3<f32>({}, {}, {}))",
+                        axes[0], axes[1], axes[2]
+                    )
+                } else if used {
                     format!("{}.a", sample(slot, &coords))
                 } else if self.intersection {
                     "0.5".into()
@@ -506,7 +540,9 @@ impl RenderModifier for CloudRemapModifier {
         }
         if self.intersection {
             context.set_needs_normal();
-            fragment_world_position(&mut code);
+            if !self.triplanar || !(self.use_cloud1 || self.use_cloud2) {
+                fragment_world_position(&mut code);
+            }
             let sample_ramp = if self.use_ramp {
                 sample(self.ramp_slot, &uv("vec2<f32>(ramp_x, 0.5)", self.ramp_uv))
             } else {

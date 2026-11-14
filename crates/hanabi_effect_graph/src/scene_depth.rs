@@ -138,6 +138,7 @@ struct SurfacePipelines {
 enum SurfaceOption {
     SoftAdditive,
     DamageNumber,
+    Intersection { blend: u32, cull: u32 },
 }
 
 fn extract_surface_options(
@@ -165,6 +166,17 @@ fn extract_surface_options(
             SurfaceOption::SoftAdditive
         } else if source.contains("// hanabi_workshop: damage_number_depth") {
             SurfaceOption::DamageNumber
+        } else if let Some(flags) = source.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("// hanabi_workshop: intersection ")
+        }) {
+            let Some((blend, cull)) = flags.split_once(' ') else {
+                continue;
+            };
+            let (Ok(blend), Ok(cull)) = (blend.parse(), cull.parse()) else {
+                continue;
+            };
+            SurfaceOption::Intersection { blend, cull }
         } else {
             continue;
         };
@@ -202,16 +214,49 @@ fn specialize_surface_pipelines(
                     .iter_mut()
                     .flatten()
                 {
-                    target.write_mask = ColorWrites::RED | ColorWrites::GREEN | ColorWrites::BLUE;
-                    if matches!(style, SurfaceOption::SoftAdditive) {
-                        target.blend = Some(BlendState {
-                            color: BlendComponent {
-                                src_factor: BlendFactor::One,
-                                dst_factor: BlendFactor::OneMinusSrc,
-                                operation: BlendOperation::Add,
-                            },
-                            alpha: BlendComponent::OVER,
-                        });
+                    match style {
+                        SurfaceOption::Intersection { blend, .. } => {
+                            let (source, destination) = match blend {
+                                1 => (BlendFactor::One, BlendFactor::One),
+                                2 => (BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha),
+                                3 => (BlendFactor::SrcAlpha, BlendFactor::One),
+                                4 => (BlendFactor::SrcAlpha, BlendFactor::SrcAlphaSaturated),
+                                5 => (BlendFactor::One, BlendFactor::OneMinusSrcAlpha),
+                                _ => continue,
+                            };
+                            target.blend = Some(BlendState {
+                                color: BlendComponent {
+                                    src_factor: source,
+                                    dst_factor: destination,
+                                    operation: BlendOperation::Add,
+                                },
+                                alpha: BlendComponent {
+                                    src_factor: source,
+                                    dst_factor: if blend == 4 {
+                                        BlendFactor::One
+                                    } else {
+                                        destination
+                                    },
+                                    operation: BlendOperation::Add,
+                                },
+                            });
+                        }
+                        SurfaceOption::SoftAdditive => {
+                            target.write_mask =
+                                ColorWrites::RED | ColorWrites::GREEN | ColorWrites::BLUE;
+                            target.blend = Some(BlendState {
+                                color: BlendComponent {
+                                    src_factor: BlendFactor::One,
+                                    dst_factor: BlendFactor::OneMinusSrc,
+                                    operation: BlendOperation::Add,
+                                },
+                                alpha: BlendComponent::OVER,
+                            });
+                        }
+                        SurfaceOption::DamageNumber => {
+                            target.write_mask =
+                                ColorWrites::RED | ColorWrites::GREEN | ColorWrites::BLUE;
+                        }
                     }
                 }
                 if matches!(style, SurfaceOption::DamageNumber)
@@ -219,6 +264,13 @@ fn specialize_surface_pipelines(
                 {
                     depth.depth_compare = Some(CompareFunction::Always);
                     depth.depth_write_enabled = Some(false);
+                }
+                if let SurfaceOption::Intersection { cull, .. } = style {
+                    descriptor.primitive.cull_mode = match cull {
+                        1 => Some(Face::Front),
+                        2 => Some(Face::Back),
+                        _ => None,
+                    };
                 }
                 cache.queue_render_pipeline(descriptor)
             });
