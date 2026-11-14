@@ -285,13 +285,14 @@ impl Roundtrip<'_, '_> {
                         "SnowToppedParticleModifier" => ("depth", 0),
                         "SolidParallaxModifier" => ("parallax", 0),
                         "SphereForceFieldModifier" => ("gravity", 0),
+                        "SurfaceLightingModifier" if config.get("deferred_lighting") == Some(&EditValue::Bool(true)) => ("receive_shadows", 0),
                         "SurfaceLightingModifier" if config.get("cast_shadows") == Some(&EditValue::Bool(true)) => ("cast_shadows", 1),
                         "TrailRendererModifier" => ("corner_vertices", 1),
                         "ParticleLightsModifier" => ("intensity", 1),
                         _ => return None,
                     };
                     let new = match config.get(field)? {
-                        EditValue::Bool(value) if field == "cast_shadows" => EditValue::Bool(!value),
+                        EditValue::Bool(value) if matches!(field, "cast_shadows" | "receive_shadows") => EditValue::Bool(!value),
                         EditValue::U32(count) if *count > 0 => {
                             EditValue::U32(count.saturating_add(2))
                         }

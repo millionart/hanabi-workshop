@@ -32,12 +32,15 @@ use bevy::{
 };
 use bevy_hanabi::{EffectMaterial, EffectSystems};
 
+mod deferred;
+
 #[cfg(feature = "3d")]
 use bevy::{
+    core_pipeline::deferred::AlphaMask3dDeferred,
     pbr::{CORE_3D_SHADOW_MAP_FORMAT, LATE_SHADOW_PASS, ShadowView, ViewLightEntities, per_view_shadow_pass},
     platform::collections::{HashMap, HashSet},
     render::{
-        render_phase::{BinnedPhaseItem, DrawFunctions, PhaseItem, PhaseItemExtraIndex},
+        render_phase::{BinnedPhaseItem, DrawFunctions, PhaseItemExtraIndex},
         view::{ExtractedView, ViewUniformOffset},
     },
 };
@@ -77,10 +80,16 @@ impl Plugin for SceneDepthPlugin {
                     .before(sort_phase_system::<Transparent3d>),
             );
         #[cfg(feature = "3d")]
-        render.add_systems(Render, specialize_shadow_pipelines.in_set(RenderSystems::PhaseSort))
-            .add_systems(Core3d, draw_hanabi_shadows
-                .after(per_view_shadow_pass::<LATE_SHADOW_PASS>)
-                .before(Core3dSystems::MainPass));
+        {
+            render.init_resource::<deferred::DeferredPipelines>()
+                .init_resource::<DrawFunctions<AlphaMask3dDeferred>>()
+                .add_systems(Render, deferred::clear_deferred.in_set(RenderSystems::Queue).before(EffectSystems::QueueEffects))
+                .add_systems(Render, (specialize_shadow_pipelines, deferred::queue_deferred).chain().in_set(RenderSystems::PhaseSort))
+                .add_systems(Core3d, draw_hanabi_shadows
+                    .after(per_view_shadow_pass::<LATE_SHADOW_PASS>)
+                    .before(Core3dSystems::MainPass));
+            render.world().resource::<DrawFunctions<AlphaMask3dDeferred>>().write().add(deferred::DrawDeferredParticle);
+        }
         render.add_systems(
             Render,
             clear_hanabi_bins
@@ -164,6 +173,8 @@ fn extract_surface_options(
     mut events: Extract<MessageReader<AssetEvent<Shader>>>,
     shaders: Extract<Res<Assets<Shader>>>,
     mut options: ResMut<SurfacePipelines>,
+    mut deferred: ResMut<deferred::DeferredPipelines>,
+    mut cache: ResMut<PipelineCache>,
 ) {
     for event in events.read() {
         let id = match *event {
@@ -172,6 +183,7 @@ fn extract_surface_options(
                 options.options.remove(&id);
                 #[cfg(feature = "3d")]
                 options.shadow_casters.remove(&id);
+                deferred.remove_shader(id, &mut cache);
                 continue;
             }
             _ => continue,
@@ -183,6 +195,7 @@ fn extract_surface_options(
             continue;
         };
         let source = shader.source.as_str();
+        deferred.extract_shader(id, shader, &mut cache);
         #[cfg(feature = "3d")]
         if source.contains(crate::particle_material::SHADOW_CASTER_MARKER) {
             options.shadow_casters.insert(id);
@@ -254,18 +267,24 @@ fn draw_hanabi_shadows(
     lights: Query<(&ShadowView, &ViewUniformOffset)>,
     phases: Res<ViewBinnedRenderPhases<AlphaMask3d>>,
     options: Res<SurfacePipelines>,
+    deferred: Res<deferred::DeferredPipelines>,
     draws: Res<DrawFunctions<AlphaMask3d>>,
     cache: Res<PipelineCache>,
     mut ctx: RenderContext,
 ) {
     let (view, view_lights) = view.into_inner();
     let Some(phase) = phases.get(&view.retained_view_entity) else { return; };
-    let casters: Vec<_> = phase.non_mesh_items.iter().filter_map(|((batch, bin), members)| {
+    let forward = phase.non_mesh_items.iter().flat_map(|((batch, bin), members)| {
+        members.entities.iter().map(move |(&main, &render)| (batch, bin, (render, main)))
+    });
+    let moved = deferred.moved(view.retained_view_entity).iter()
+        .map(|item| (&item.batch_set_key, &item.bin_key, item.representative_entity));
+    let casters: Vec<_> = forward.chain(moved).filter_map(|(batch, bin, entity)| {
         let pipeline = *options.shadow_pipelines.get(&batch.pipeline)?;
         cache.get_render_pipeline(pipeline)?;
         let mut batch = batch.clone();
         batch.pipeline = pipeline;
-        Some((batch, bin, members))
+        Some(AlphaMask3d::new(batch, bin.clone(), entity, 0..1, PhaseItemExtraIndex::None))
     }).collect();
     if casters.is_empty() {
         return;
@@ -278,13 +297,10 @@ fn draw_hanabi_shadows(
             depth_stencil_attachment: Some(shadow.depth_attachment.get_attachment(StoreOp::Store)),
             ..Default::default()
         });
-        for (batch, bin, members) in &casters {
-            let Some(draw) = draw_functions.get_mut(batch.draw_function) else { continue; };
-            for (&main, &render) in &members.entities {
-                let item = AlphaMask3d::new(batch.clone(), (*bin).clone(), (render, main), 0..1, PhaseItemExtraIndex::None);
-                if let Err(error) = draw.draw(world, &mut pass, light, &item) {
-                    warn!(?error, "Hanabi directional shadow draw failed");
-                }
+        for item in &casters {
+            let Some(draw) = draw_functions.get_mut(item.batch_set_key.draw_function) else { continue; };
+            if let Err(error) = draw.draw(world, &mut pass, light, item) {
+                warn!(?error, "Hanabi directional shadow draw failed");
             }
         }
         debug!(batches = casters.len(), "Hanabi alpha-masked effects drew directional shadows");

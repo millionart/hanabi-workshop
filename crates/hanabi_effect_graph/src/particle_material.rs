@@ -197,6 +197,8 @@ pub fn register(registry: &AppTypeRegistry) {
             roughness: 1.,
             reflectance: 0.,
             cast_shadows: false,
+            deferred_lighting: false,
+            receive_shadows: false,
         })
     });
     register_reflect_modifier::<LegacyParticleModifier>(registry, |_| {
@@ -471,10 +473,15 @@ pub struct SurfaceLightingModifier {
     pub reflectance: f32,
     #[serde(default)]
     pub cast_shadows: bool,
+    #[serde(default)]
+    pub deferred_lighting: bool,
+    #[serde(default)]
+    pub receive_shadows: bool,
 }
 
 pub const SCENE_LIGHT_SLOT: &str = "scene_light";
 pub(crate) const SHADOW_CASTER_MARKER: &str = "// hanabi_workshop: cast_shadows\n";
+pub(crate) const DEFERRED_MARKER: &str = "// hanabi_workshop: deferred_lighting\n";
 
 /// Two scrolling source height maps drive the cutout and view-dependent UV offset.
 #[derive(Clone, Copy, Debug, Default, Reflect, Serialize, Deserialize)]
@@ -954,6 +961,9 @@ impl RenderModifier for SurfaceLightingModifier {
         if self.cast_shadows {
             code.push_str(SHADOW_CASTER_MARKER);
         }
+        if self.deferred_lighting {
+            code.push_str(DEFERRED_MARKER);
+        }
         fragment_world_position(&mut code);
         code.push_str("let world = world_h.xyz / world_h.w;\nvar n = normalize(normal);\n");
         let light = self.light_slot;
@@ -995,7 +1005,26 @@ impl RenderModifier for SurfaceLightingModifier {
         } else {
             emission
         };
+        if self.deferred_lighting {
+            let flags = if self.receive_shadows { "MESH_FLAGS_SHADOW_RECEIVER_BIT" } else { "0u" };
+            code.push_str(&format!(r#"
+@if(HANABI_DEFERRED) {{
+    hanabi_pbr.frag_coord = in.position;
+    hanabi_pbr.material.base_color = color;
+    hanabi_pbr.material.emissive = vec4<f32>({emission} * view.exposure, 0.0);
+    hanabi_pbr.material.metallic = {:?};
+    hanabi_pbr.material.perceptual_roughness = {:?};
+    hanabi_pbr.material.reflectance = vec3<f32>({:?});
+    hanabi_pbr.N = n;
+    hanabi_pbr.flags = {flags};
+}}
+@if(!HANABI_DEFERRED) {{
+"#, self.metallic.clamp(0., 1.), self.roughness, self.reflectance));
+        }
         code.push_str(&format!("let l = normalize({dir});\nlet v = normalize(view.world_position - world);\nlet h = normalize(l + v);\nlet mu = max(dot(n, l), 0.0);\nlet metallic = {:?};\nlet a = max({:?} * {:?}, 0.002);\nlet nh = max(dot(n, h), 0.0);\nlet d = (a * a) / max(3.14159265 * pow(nh * nh * (a * a - 1.0) + 1.0, 2.0), 1e-5);\nlet f0 = mix(vec3<f32>(0.16 * {:?} * {:?}), color.rgb, metallic);\nlet f = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);\nlet shaded = color.rgb * (1.0 - metallic) * ({ambient} + {diffuse} * mu) + {diffuse} * f * d * mu * 0.25;\ncolor = vec4<f32>(shaded + {emission}, color.a);\n}}\n", self.metallic.clamp(0.,1.), self.roughness, self.roughness, self.reflectance, self.reflectance));
+        if self.deferred_lighting {
+            code.push_str("}\n");
+        }
         context.fragment_code.push_str(&code);
         Ok(())
     }
