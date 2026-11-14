@@ -156,15 +156,34 @@ struct Roundtrip<'w, 's> {
     edits: MessageWriter<'w, edits::EditRequest>,
     files: MessageWriter<'w, app_commands::AppCommand>,
     exits: MessageWriter<'w, AppExit>,
-    edited: Local<
-        's,
-        Option<(
-            hanabi_effect_graph::model::EmitterId,
-            hanabi_effect_graph::model::NodeId,
-            bevy_hanabi::Value,
-        )>,
-    >,
+    edited: Local<'s, Option<RoundtripValue>>,
     saving: Local<'s, bool>,
+}
+
+struct RoundtripValue {
+    emitter: hanabi_effect_graph::model::EmitterId,
+    node: hanabi_effect_graph::model::NodeId,
+    port: Option<hanabi_effect_graph::model::SharedStr>,
+    value: bevy_hanabi::Value,
+}
+
+impl RoundtripValue {
+    fn matches(&self, graph: &hanabi_effect_graph::model::EffectGraph) -> bool {
+        use hanabi_effect_graph::model::{ExprNode, NodePayload};
+        let Some(node) = graph
+            .emitter(self.emitter)
+            .and_then(|emitter| emitter.node(self.node))
+        else {
+            return false;
+        };
+        if let Some(port) = &self.port {
+            node.inputs
+                .iter()
+                .any(|input| &input.name == port && input.default.as_value() == Some(self.value))
+        } else {
+            node.payload == NodePayload::Expr(ExprNode::Literal(self.value))
+        }
+    }
 }
 
 impl Roundtrip<'_, '_> {
@@ -188,15 +207,8 @@ impl Roundtrip<'_, '_> {
             content.bake_errors()
         );
         assert!(shaders.0.is_empty(), "{:?}", shaders.0);
-        if let Some((emitter, node, new)) = *self.edited {
-            let actual = &content
-                .effect_graph()
-                .emitter(emitter)
-                .unwrap()
-                .node(node)
-                .unwrap()
-                .payload;
-            if *actual != NodePayload::Expr(ExprNode::Literal(new)) {
+        if let Some(edit) = self.edited.as_ref() {
+            if !edit.matches(content.effect_graph()) {
                 return;
             }
             if !*self.saving {
@@ -212,20 +224,11 @@ impl Roundtrip<'_, '_> {
             }
             let saved = hanabi_effect_graph::from_ron_bytes(&std::fs::read(path).unwrap()).unwrap();
             assert_eq!(&saved.graph, content.effect_graph());
-            assert_eq!(
-                saved
-                    .graph
-                    .emitter(emitter)
-                    .unwrap()
-                    .node(node)
-                    .unwrap()
-                    .payload,
-                NodePayload::Expr(ExprNode::Literal(new))
-            );
+            assert!(edit.matches(&saved.graph));
             info!(
                 "Workshop round trip passed: {} emitters; edited node {}, saved and read back",
                 saved.graph.emitters.len(),
-                node.get()
+                edit.node.get()
             );
             self.exits.write(AppExit::Success);
             return;
@@ -237,8 +240,8 @@ impl Roundtrip<'_, '_> {
         {
             return;
         }
-        let (emitter, node, old) = content
-            .effect_graph()
+        let graph = content.effect_graph();
+        let (emitter, node, port, old) = graph
             .emitters
             .iter()
             .find_map(|emitter| {
@@ -248,17 +251,47 @@ impl Roundtrip<'_, '_> {
                     ))) if *old > 0.
                         && emitter.links.iter().any(|link| link.from.node == node.id) =>
                     {
-                        Some((emitter.id, node.id, *old))
+                        Some((emitter.id, node.id, None, *old))
                     }
                     _ => None,
                 })
             })
-            .expect("linked editable scalar node");
+            .or_else(|| {
+                graph.emitters.iter().find_map(|emitter| {
+                    emitter.nodes.iter().find_map(|node| {
+                        node.inputs.iter().find_map(|input| {
+                            let Some(Value::Scalar(bevy_hanabi::ScalarValue::Float(value))) =
+                                input.default.as_value()
+                            else {
+                                return None;
+                            };
+                            (!emitter
+                                .links
+                                .iter()
+                                .any(|link| link.to.node == node.id && link.to.port == input.name))
+                            .then(|| (emitter.id, node.id, Some(input.name.clone()), value))
+                        })
+                    })
+                })
+            })
+            .expect("editable scalar node or port");
         let new = Value::from(old * 1.25);
-        self.edits.write(edits::EditRequest::new(
-            entity,
-            edits::EditKind::SetLiteralValue { emitter, node, new },
-        ));
-        *self.edited = Some((emitter, node, new));
+        let command = if let Some(port) = port.clone() {
+            edits::EditKind::SetInputDefault {
+                emitter,
+                node,
+                port,
+                new,
+            }
+        } else {
+            edits::EditKind::SetLiteralValue { emitter, node, new }
+        };
+        self.edits.write(edits::EditRequest::new(entity, command));
+        *self.edited = Some(RoundtripValue {
+            emitter,
+            node,
+            port,
+            value: new,
+        });
     }
 }
