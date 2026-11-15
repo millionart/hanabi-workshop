@@ -287,6 +287,11 @@ impl Roundtrip<'_, '_> {
                     };
                     let (field, priority) = match type_path.rsplit("::").next()? {
                         "TimedSubEmitterModifier"
+                            if matches!(config.get("particles_per_meter"), Some(EditValue::Scalar(Value::Scalar(bevy_hanabi::ScalarValue::Float(rate)))) if *rate > 0.) =>
+                        {
+                            ("particles_per_meter", -1)
+                        }
+                        "TimedSubEmitterModifier"
                             if matches!(config.get("burst_count"), Some(EditValue::U32(count)) if *count > 0) =>
                         {
                             ("burst_count", 0)

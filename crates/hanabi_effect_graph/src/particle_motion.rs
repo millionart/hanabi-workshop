@@ -192,6 +192,8 @@ pub struct ParticleSpawnEventModifier {
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct TimedSubEmitterModifier {
     pub particles_per_second: f32,
+    #[serde(default)]
+    pub particles_per_meter: f32,
     pub start_delay_min: f32,
     pub start_delay_max: f32,
     pub duration: f32,
@@ -206,8 +208,14 @@ pub struct TimedSubEmitterModifier {
     pub burst_time: f32,
     #[serde(default)]
     pub burst_interval: f32,
+    #[serde(default = "full_probability")]
+    pub burst_probability: f32,
     #[serde(default)]
     pub snapshot_age: bool,
+}
+
+fn full_probability() -> f32 {
+    1.
 }
 
 /// Emit from a world-geometry collision. The isolated editor previews a floor plane.
@@ -222,9 +230,18 @@ pub struct CollisionSubEmitterModifier {
     pub preview_tangent_retention: f32,
 }
 
-/// Interpret the child's shape around the parent position already stored in world space.
+/// Interpret the child's shape around the parent position in world space.
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
-pub struct SubEmitterTransformModifier;
+pub struct SubEmitterTransformModifier {
+    #[serde(default)]
+    pub local_parent_position: Option<ExprHandle>,
+    #[serde(default = "unit_shape_scale")]
+    pub shape_scale: Vec3,
+}
+
+fn unit_shape_scale() -> Vec3 {
+    Vec3::ONE
+}
 
 /// Draw position and direction from one editable emitter shape.
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
@@ -478,6 +495,7 @@ pub fn register(registry: &AppTypeRegistry) {
     register_reflect_modifier::<TimedSubEmitterModifier>(registry, |_| {
         Box::new(TimedSubEmitterModifier {
             particles_per_second: 10.,
+            particles_per_meter: 0.,
             start_delay_min: 0.,
             start_delay_max: 0.,
             duration: 1.,
@@ -488,6 +506,7 @@ pub fn register(registry: &AppTypeRegistry) {
             burst_repetitions: 0,
             burst_time: 0.,
             burst_interval: 0.,
+            burst_probability: 1.,
             snapshot_age: false,
         })
     });
@@ -495,7 +514,10 @@ pub fn register(registry: &AppTypeRegistry) {
         Box::new(CollisionSubEmitterModifier { count: module.lit(1_u32), preview_floor: 0., child_index: 0, preview_bounce: 0., preview_tangent_retention: 0. })
     });
     register_reflect_modifier::<SubEmitterTransformModifier>(registry, |_| {
-        Box::new(SubEmitterTransformModifier)
+        Box::new(SubEmitterTransformModifier {
+            local_parent_position: None,
+            shape_scale: Vec3::ONE,
+        })
     });
     register_reflect_modifier::<EmissionShapeModifier>(registry, |module| {
         Box::new(EmissionShapeModifier {
@@ -973,6 +995,15 @@ impl Modifier for TimedSubEmitterModifier {
                 Attribute::F32_5,
                 Attribute::F32_7,
             ])
+        } else if self.particles_per_meter > 0. {
+            Cow::Borrowed(&[
+                Attribute::AGE,
+                Attribute::LIFETIME,
+                Attribute::U32_1,
+                Attribute::POSITION,
+                Attribute::F32X3_5,
+                Attribute::F32_6,
+            ])
         } else {
             Cow::Borrowed(&[Attribute::AGE, Attribute::LIFETIME, Attribute::U32_1])
         }
@@ -989,7 +1020,26 @@ impl Modifier for TimedSubEmitterModifier {
         } else {
             format!("{:?}", self.duration.max(0.))
         };
-        let burst = if self.burst_count > 0 && self.burst_repetitions > 0 {
+        let burst = if self.burst_count > 0 && self.looping {
+            let time = self.burst_time.max(0.);
+            let interval = self.burst_interval.max(f32::EPSILON);
+            let limit = if self.burst_repetitions == 0 { u32::MAX } else { self.burst_repetitions } as f32;
+            let length = self.duration.max(f32::EPSILON);
+            let chance = self.burst_probability.clamp(0., 1.);
+            let count = self.burst_count;
+            format!(r#"
+        let cycles_before = floor(previous / {length:?});
+        let cycles_after = floor(current / {length:?});
+        let before_phase = previous - cycles_before * {length:?};
+        let after_phase = current - cycles_after * {length:?};
+        let per_cycle = clamp(ceil(({length:?} - {time:?}) / {interval:?}), 0.0, {limit:?});
+        let before = clamp(ceil((before_phase - {time:?}) / {interval:?}), 0.0, {limit:?});
+        let after = clamp(ceil((after_phase - {time:?}) / {interval:?}), 0.0, {limit:?});
+        if ({chance:?} >= 1.0 || source_particle_random(parent_seed + 0x6c078965u) < {chance:?}) {{
+            count += {count}u * u32(max((cycles_after - cycles_before) * per_cycle + after - before, 0.0));
+        }}
+"#)
+        } else if self.burst_count > 0 && self.burst_repetitions > 0 {
             let time = self.burst_time.max(0.);
             let interval = self.burst_interval.max(f32::EPSILON);
             let repetitions = self.burst_repetitions - 1;
@@ -1005,6 +1055,21 @@ impl Modifier for TimedSubEmitterModifier {
         count += select(0u, {count}u, first_burst || repeat_burst);
 "#,
             )
+        } else {
+            String::new()
+        };
+        let distance = if self.particles_per_meter > 0. {
+            let rate = self.particles_per_meter;
+            format!(r#"
+        let frame = unpack_compressed_transform((*spawner).transform);
+        let step = (frame * vec4<f32>(particle.position - particle.f32x3_5, 0.0)).xyz;
+        let traveled = length(step) * ((current - previous) / {dt});
+        let particles = particle.f32_6 + traveled * {rate:?};
+        let whole = floor(particles);
+        count += u32(whole);
+        particle.f32_6 = particles - whole;
+        particle.f32x3_5 = particle.position;
+"#)
         } else {
             String::new()
         };
@@ -1037,6 +1102,7 @@ if ({active} && {dt} > 0.0 && {probability:?} > 0.0) {{
         let current = clamp(elapsed, previous, {duration});
         var count = u32(floor(current * {rate:?}) - floor(previous * {rate:?}));
         {burst}
+        {distance}
         append_spawn_events_{child}((*effect_metadata).base_child_index, particle_index, count);
     }}
 }}
@@ -1062,10 +1128,19 @@ impl Modifier for SubEmitterTransformModifier {
     fn boxed_clone(&self) -> BoxedModifier {
         Box::new(*self)
     }
-    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
-        context.main_code.push_str(
-            "\nparticle.position = (transform * vec4<f32>(particle.position, 0.0)).xyz;\nparticle.velocity = (transform * vec4<f32>(particle.velocity, 0.0)).xyz;\n",
-        );
+    fn apply(&self, module: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        if let Some(parent_position) = self.local_parent_position {
+            let parent_position = context.eval(module, parent_position)?;
+            let scale = self.shape_scale.to_wgsl_string();
+            context.main_code.push_str(&format!(r#"
+particle.position = (transform * vec4<f32>({parent_position} + particle.position * {scale}, 1.0)).xyz;
+particle.velocity = (transform * vec4<f32>(particle.velocity * {scale}, 0.0)).xyz;
+"#));
+        } else {
+            context.main_code.push_str(
+                "\nparticle.position = (transform * vec4<f32>(particle.position, 0.0)).xyz;\nparticle.velocity = (transform * vec4<f32>(particle.velocity, 0.0)).xyz;\n",
+            );
+        }
         Ok(())
     }
 }
