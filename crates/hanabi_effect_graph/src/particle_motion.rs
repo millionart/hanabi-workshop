@@ -143,6 +143,10 @@ pub struct CollisionSubEmitterModifier {
     pub count: ExprHandle,
     pub preview_floor: f32,
     pub child_index: u32,
+    #[serde(default)]
+    pub preview_bounce: f32,
+    #[serde(default)]
+    pub preview_tangent_retention: f32,
 }
 
 /// Interpret the child's shape around the parent position already stored in world space.
@@ -407,7 +411,7 @@ pub fn register(registry: &AppTypeRegistry) {
         })
     });
     register_reflect_modifier::<CollisionSubEmitterModifier>(registry, |module| {
-        Box::new(CollisionSubEmitterModifier { count: module.lit(1_u32), preview_floor: 0., child_index: 0 })
+        Box::new(CollisionSubEmitterModifier { count: module.lit(1_u32), preview_floor: 0., child_index: 0, preview_bounce: 0., preview_tangent_retention: 0. })
     });
     register_reflect_modifier::<SubEmitterTransformModifier>(registry, |_| {
         Box::new(SubEmitterTransformModifier)
@@ -1001,6 +1005,8 @@ impl Modifier for CollisionSubEmitterModifier {
         let count = context.eval(module, self.count)?;
         let dt = simulation_delta(context);
         let floor = self.preview_floor.to_wgsl_string();
+        let bounce = (-self.preview_bounce).to_wgsl_string();
+        let tangent = self.preview_tangent_retention.to_wgsl_string();
         let child = self.child_index;
         context.main_code.push_str(&format!(r#"
 if ({dt} > 0.0) {{
@@ -1010,7 +1016,7 @@ if ({dt} > 0.0) {{
         if (particle.position.y <= {floor} && previous.y > {floor}) {{
             let fraction = ({floor} - previous.y) / (particle.position.y - previous.y);
             particle.position = mix(previous, particle.position, fraction);
-            particle.velocity = vec3<f32>(0.0);
+            particle.velocity *= vec3<f32>({tangent}, {bounce}, {tangent});
             hit = true;
         }}
     }}

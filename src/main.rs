@@ -292,6 +292,16 @@ impl Roundtrip<'_, '_> {
                             ("burst_count", 0)
                         }
                         "TimedSubEmitterModifier" => ("particles_per_second", 0),
+                        "CollisionSubEmitterModifier" if matches!(config.get("preview_bounce"), Some(EditValue::Scalar(Value::Scalar(bevy_hanabi::ScalarValue::Float(bounce)))) if *bounce > 0.) => {
+                            let input = node.inputs.iter().find(|input| input.name.as_ref() == "count")?;
+                            let Value::Scalar(bevy_hanabi::ScalarValue::Uint(count)) = input.default.as_value()? else { return None; };
+                            return Some((0, edits::EditKind::SetInputDefault {
+                                emitter: emitter.id,
+                                node: node.id,
+                                port: input.name.clone(),
+                                new: count.saturating_add(2).into(),
+                            }));
+                        }
                         "CollisionSubEmitterModifier" => ("preview_floor", 0),
                         "SnowToppedParticleModifier" => ("depth", 0),
                         "SolidParallaxModifier" => ("parallax", 0),
