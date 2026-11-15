@@ -94,6 +94,7 @@ fn builtin_display_name(short: &str) -> Option<&'static str> {
         "ConformToSphereModifier" => "Conform To Sphere",
         // Lifetime / culling
         "KillSphereModifier" => "Kill (Sphere)",
+        "SweptSphereTriggerModifier" => "Swept Sphere Trigger",
         "KillAabbModifier" => "Kill (AABB)",
         // Events
         "EmitSpawnEventModifier" => "Emit Spawn Event",

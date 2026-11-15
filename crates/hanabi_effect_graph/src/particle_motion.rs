@@ -103,6 +103,79 @@ fn sphere_force_field_matches_native_acceleration_and_drag() {
     assert_eq!(drag.velocity(pose, Vec3::ZERO, Vec3::X * 0.001, 0, 0.1), Vec3::ZERO);
 }
 
+/// Kill a particle whose swept radius touches a sphere in simulation space.
+#[derive(Clone, Copy, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+pub struct SweptSphereTriggerModifier {
+    pub center: Vec3,
+    pub radius: f32,
+    pub particle_radius_scale: f32,
+}
+
+impl SweptSphereTriggerModifier {
+    pub fn from_effect(asset: &bevy_hanabi::EffectAsset) -> Option<&Self> {
+        asset.update_modifiers().find_map(|modifier| modifier.as_reflect().downcast_ref::<Self>())
+    }
+
+    pub fn kills(&self, previous: Vec3, current: Vec3, size: Vec3) -> bool {
+        let start = previous - self.center;
+        let step = current - previous;
+        let fraction = (-start.dot(step) / step.length_squared().max(f32::MIN_POSITIVE)).clamp(0., 1.);
+        let radius = self.radius + (0.5 * self.particle_radius_scale) * size.max_element();
+        (start + step * fraction).length_squared() <= radius * radius
+    }
+}
+
+impl Modifier for SweptSphereTriggerModifier {
+    fn context(&self) -> ModifierContext {
+        ModifierContext::Update
+    }
+
+    fn attributes(&self) -> Cow<'_, [Attribute]> {
+        Cow::Borrowed(&[Attribute::POSITION, Attribute::F32X3_6, Attribute::SIZE3])
+    }
+
+    fn boxed_clone(&self) -> BoxedModifier {
+        Box::new(*self)
+    }
+
+    fn apply(&self, _: &mut Module, context: &mut ShaderWriter) -> Result<(), ExprError> {
+        let center = self.center.to_wgsl_string();
+        let radius = self.radius.to_wgsl_string();
+        let particle_scale = (0.5 * self.particle_radius_scale).to_wgsl_string();
+        context.main_code.push_str(&format!(
+            r#"{{
+    let start = particle.f32x3_6 - {center};
+    let step = particle.position - particle.f32x3_6;
+    let phase = clamp(-dot(start, step) / max(dot(step, step), 1.17549435e-38), 0.0, 1.0);
+    let closest = start + phase * step;
+    let size = particle.size3;
+    let radius = {radius} + {particle_scale} * max(size.x, max(size.y, size.z));
+    if (dot(closest, closest) <= radius * radius) {{
+        is_alive = false;
+    }}
+}}
+"#,
+        ));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn sphere_trigger_uses_the_sweep_and_particle_radius() {
+    let sphere = SweptSphereTriggerModifier {
+        center: Vec3::Z,
+        radius: 2.,
+        particle_radius_scale: 1.,
+    };
+    let start = sphere.center + Vec3::new(-3., 2.4, 0.);
+    let end = start + Vec3::X * 6.;
+    assert!(sphere.kills(start, end, Vec3::ONE));
+    assert!(!sphere.kills(start, end, Vec3::splat(0.5)));
+    assert!(!sphere.kills(end, end, Vec3::ONE));
+    assert!(sphere.kills(sphere.center, sphere.center, Vec3::ONE));
+}
+
 /// Emit a GPU event on birth (0), trail spacing (1) or death (2).
 #[derive(Clone, Copy, Debug, Reflect, Serialize, Deserialize)]
 pub struct ParticleSpawnEventModifier {
@@ -297,6 +370,7 @@ pub fn register(registry: &AppTypeRegistry) {
     registry.write().register::<WorldAccelerationModifier>();
     registry.write().register::<ParticleDragModifier>();
     registry.write().register::<SphereForceFieldModifier>();
+    registry.write().register::<SweptSphereTriggerModifier>();
     registry.write().register::<CurlNoiseModifier>();
     registry.write().register::<ParticleSpawnEventModifier>();
     registry.write().register::<TimedSubEmitterModifier>();
@@ -392,6 +466,13 @@ pub fn register(registry: &AppTypeRegistry) {
             orbit_attraction: 0.1,
             rotation_randomness: Vec2::ZERO,
             drag: 0.02,
+        })
+    });
+    register_reflect_modifier::<SweptSphereTriggerModifier>(registry, |_| {
+        Box::new(SweptSphereTriggerModifier {
+            center: Vec3::ZERO,
+            radius: 1.,
+            particle_radius_scale: 1.,
         })
     });
     register_reflect_modifier::<TimedSubEmitterModifier>(registry, |_| {

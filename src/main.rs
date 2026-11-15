@@ -306,6 +306,7 @@ impl Roundtrip<'_, '_> {
                         "SnowToppedParticleModifier" => ("depth", 0),
                         "SolidParallaxModifier" => ("parallax", 0),
                         "SphereForceFieldModifier" => ("gravity", 0),
+                        "SweptSphereTriggerModifier" => ("radius", 0),
                         "SurfaceLightingModifier" if config.get("deferred_lighting") == Some(&EditValue::Bool(true)) => ("receive_shadows", 0),
                         "SurfaceLightingModifier" if config.get("cast_shadows") == Some(&EditValue::Bool(true)) => ("cast_shadows", 1),
                         "TrailRendererModifier" => ("corner_vertices", 1),
