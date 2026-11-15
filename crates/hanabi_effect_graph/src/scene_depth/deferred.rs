@@ -70,13 +70,13 @@ import bevy_pbr::render::mesh_view_bindings::view;
 import bevy_pbr::render::mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT;
 import bevy_pbr::render::pbr_types::pbr_input_new;
 import bevy_pbr::deferred::functions::deferred_gbuffer_from_pbr_input;
-struct HanabiDeferredOutput {{ @location(2) surface: vec4<u32>, @location(3) pass_id: u32 }}
 {before}
 fn fragment(in: VertexOutput) -> HanabiDeferredOutput {{
     var hanabi_pbr = pbr_input_new();
     {body}
     return HanabiDeferredOutput(deferred_gbuffer_from_pbr_input(hanabi_pbr), 1u);
 {end}
+struct HanabiDeferredOutput {{ @location(2) surface: vec4<u32>, @location(3) pass_id: u32 }}
 "#
         );
         let handle = self.shaders.entry(original).or_insert_with(|| {

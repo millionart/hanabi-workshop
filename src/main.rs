@@ -114,9 +114,20 @@ fn main() {
     if let Some(path) = roundtrip {
         app.insert_resource(bevy::winit::WinitSettings::continuous());
         app.add_systems(PostStartup, use_offscreen_editor_camera)
+            .add_systems(PostUpdate, use_deferred_roundtrip_viewports)
             .add_systems(Last, move |mut probe: Roundtrip| probe.tick(&path));
     }
     app.run();
+}
+
+fn use_deferred_roundtrip_viewports(
+    mut commands: Commands,
+    cameras: Query<Entity, (With<document::ViewportCamera>, Without<bevy::core_pipeline::prepass::DeferredPrepass>)>,
+) {
+    use bevy::core_pipeline::prepass::{DeferredPrepass, DepthPrepass};
+    for camera in &cameras {
+        commands.entity(camera).insert((Msaa::Off, DepthPrepass, DeferredPrepass));
+    }
 }
 
 fn use_offscreen_editor_camera(
