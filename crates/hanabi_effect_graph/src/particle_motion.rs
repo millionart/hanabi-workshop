@@ -945,6 +945,7 @@ if (particle.f32_7 != 0.0) {
         // shortcut: use the current parent position until GPU events can carry per-birth interpolated data.
         context.main_code.push_str(&format!(
             r#"
+{{
 {start}
 if ({active} && {dt} > 0.0 && {probability:?} > 0.0) {{
     let parent_seed = pcg_hash(particle.u32_1 ^ (*spawner).seed);
@@ -957,6 +958,7 @@ if ({active} && {dt} > 0.0 && {probability:?} > 0.0) {{
         {burst}
         append_spawn_events_{child}((*effect_metadata).base_child_index, particle_index, count);
     }}
+}}
 }}
 "#,
             probability = self.probability.clamp(0., 1.),
